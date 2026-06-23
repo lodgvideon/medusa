@@ -39,6 +39,13 @@ func (s *Service) Map(name string) *Map { return &Map{svc: s, name: name} }
 // key was newly created. The mutation is recorded in the write-ahead log (and
 // fsynced) before returning, so an acknowledged write survives an ungraceful
 // crash; a WAL error is surfaced rather than silently dropped.
+//
+// Ordering note: the store is mutated before the WAL append, not after. Both
+// finish before the operation is acknowledged, so durability of acknowledged
+// writes holds (a crash before the fsync returns means the caller was never
+// acked). Apply-before-log is deliberate: it lets Checkpoint capture the store
+// snapshot and truncate the WAL under one lock and know every truncated record
+// is already reflected in that snapshot — so truncation can never drop a write.
 func (s *Service) applyPut(ctx context.Context, name string, key, value []byte, ttlMs int64, isBackup bool) (bool, error) {
 	p := partition.For(key)
 	expireAt := expireFromTTL(ttlMs)
@@ -390,6 +397,14 @@ func (s *Service) CloseWAL() error {
 // operation holds the WAL lock, so it cannot race a concurrent append: every
 // record being discarded is already reflected in the snapshot just written.
 // With no WAL it simply persists the snapshot.
+//
+// The lock is held across write's disk I/O, so concurrent writes stall for the
+// snapshot-persist latency. That is fine at this scale (snapshots are small and
+// periodic) and is required for the truncation-safety invariant above; doing
+// the file write outside the lock would let an append land between snapshot
+// capture and truncate and then be truncated away — losing it. Decoupling the
+// two safely needs WAL segment rotation (write to a fresh segment, persist the
+// snapshot, drop the old segment), which is on the roadmap.
 func (s *Service) Checkpoint(write func(*medusav1.Snapshot) error) error {
 	if s.wal == nil {
 		return write(s.Snapshot())

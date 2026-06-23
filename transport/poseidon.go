@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/lodgvideon/medusa/codec"
 	medusav1 "github.com/lodgvideon/medusa/genproto/medusa/v1"
@@ -41,8 +42,10 @@ type poseidonTransport struct {
 	listener  net.Listener
 	srv       *pserver.Server
 	cancel    context.CancelFunc // cancels the Serve context on Close
-	closed    bool
-	serveWG   sync.WaitGroup
+	// closed is atomic because it is read under clientMu (clientFor) but written
+	// under mu (Close); without atomicity those cross-mutex accesses would race.
+	closed  atomic.Bool
+	serveWG sync.WaitGroup
 
 	clientMu sync.Mutex
 	clients  map[string]*pclient.Client // one HTTP/2 client per target address
@@ -86,7 +89,7 @@ func (t *poseidonTransport) Addr() string {
 func (t *poseidonTransport) Listen(h Handler) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.closed {
+	if t.closed.Load() {
 		return ErrClosed
 	}
 	ln, err := net.Listen("tcp", t.addr)
@@ -160,7 +163,7 @@ func (t *poseidonTransport) httpHandler(h Handler) http.Handler {
 func (t *poseidonTransport) clientFor(addr string) (*pclient.Client, error) {
 	t.clientMu.Lock()
 	defer t.clientMu.Unlock()
-	if t.closed {
+	if t.closed.Load() {
 		return nil, ErrClosed
 	}
 	if c, ok := t.clients[addr]; ok {
@@ -221,11 +224,11 @@ func (t *poseidonTransport) Send(ctx context.Context, addr string, reqType medus
 
 func (t *poseidonTransport) Close() error {
 	t.mu.Lock()
-	if t.closed {
+	if t.closed.Load() {
 		t.mu.Unlock()
 		return nil
 	}
-	t.closed = true
+	t.closed.Store(true)
 	srv := t.srv
 	ln := t.listener
 	cancel := t.cancel

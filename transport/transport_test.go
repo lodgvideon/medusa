@@ -154,6 +154,31 @@ func TestPoseidonMegabyteRequest(t *testing.T) {
 	}
 }
 
+// TestPoseidonCloseDuringSend exercises Close racing concurrent Sends. Under the
+// race detector it guards the transport's shutdown flag against the cross-mutex
+// data race it previously had (read under clientMu, written under mu).
+func TestPoseidonCloseDuringSend(t *testing.T) {
+	echo := func(rt medusav1.MessageType, b, _ []byte) (medusav1.MessageType, []byte, error) {
+		return medusav1.MessageType_MESSAGE_TYPE_GET_RESPONSE, b, nil
+	}
+	cli, addr := poseidonPair(t, echo)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			// Errors are expected once Close lands; we only care that there is no
+			// data race or panic.
+			_, _, _ = cli.Send(ctx, addr, medusav1.MessageType_MESSAGE_TYPE_GET_REQUEST, []byte("x"), nil)
+		}()
+	}
+	_ = cli.Close()
+	wg.Wait()
+}
+
 func TestRemoteError(t *testing.T) {
 	eachTransport(t, func(t *testing.T, pair pairFactory) {
 		failing := func(medusav1.MessageType, []byte, []byte) (medusav1.MessageType, []byte, error) {

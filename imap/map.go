@@ -129,7 +129,11 @@ func (mp *Map) Get(ctx context.Context, key []byte) ([]byte, bool, error) {
 
 	// The owner missed or was unreachable. During a rebalance the entry can still
 	// live on a backup (an old holder the new owner has not received from yet),
-	// so consult each backup in order before reporting the key absent.
+	// so consult each backup in order before reporting the key absent. This is a
+	// deliberate availability-favouring choice: it also means a key the (live)
+	// owner reports absent is double-checked against backups, so a delete whose
+	// replication to a backup failed could briefly read stale until anti-entropy
+	// reconciles — an accepted trade-off in this AP design.
 	var (
 		val   []byte
 		found bool
