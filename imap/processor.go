@@ -17,12 +17,17 @@ const (
 
 // Processor computes a new entry state and a result from the current value of a
 // key. exists reports whether a live value is present (cur is nil otherwise).
-// It runs atomically on the partition owner under the entry's shard lock, so
-// concurrent processors on the same key are serialized — no lost updates.
+// It runs atomically on the partition owner under the entry's shard lock (and,
+// when a write-ahead log is enabled, the WAL lock), so concurrent processors on
+// the same key are serialized — no lost updates.
 //
 // It returns the new value (when action is Set), the action, and an out value
-// returned to the caller. Processors must be deterministic and side-effect
-// free: only their resulting state is replicated to the backup, not the call.
+// returned to the caller. A Processor MUST be a pure function of (cur, exists,
+// arg): deterministic (only its resulting state is replicated, not the call) and
+// free of side effects. In particular it MUST NOT call back into any Map or node
+// operation (Put/Get/Remove/Execute/Lock/Size/Clear): it executes while the shard
+// and WAL locks are held, so any such re-entry deadlocks. Compute purely from the
+// inputs and return.
 type Processor func(cur []byte, exists bool, arg []byte) (newVal []byte, action Action, out []byte)
 
 var (
@@ -40,6 +45,8 @@ var (
 )
 
 // RegisterProcessor adds or replaces a named processor. Call it before serving.
+// The processor must obey the Processor contract — pure, no re-entry into Map or
+// node operations (it runs under the shard and WAL locks; re-entry deadlocks).
 func RegisterProcessor(name string, p Processor) {
 	procMu.Lock()
 	processors[name] = p
