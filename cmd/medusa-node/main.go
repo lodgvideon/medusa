@@ -14,6 +14,7 @@
 //	                  peer IPs each tick; "dns:<host>:<port>" sets the port
 //	MEDUSA_BACKUPS    backup copies per partition / replication factor − 1
 //	                  (default: 1; values below 1 are treated as 1)
+//	MEDUSA_MAX_ENTRIES soft per-node entry cap before eviction (0 = unbounded)
 //	MEDUSA_AUTH_TOKEN bearer token required on the admin API (except the
 //	                  /healthz and /readyz probes); unset disables auth
 //	MEDUSA_TLS_CERT   PEM cert for the inter-node transport (enables TLS with KEY)
@@ -52,7 +53,8 @@ func main() {
 	dataDir := os.Getenv("MEDUSA_DATA_DIR")
 	seeds := splitSeeds(os.Getenv("MEDUSA_SEEDS"))
 	disco, discDesc := discovererFromEnv(os.Getenv("MEDUSA_DISCOVERY"), addr, seeds)
-	backups := envInt("MEDUSA_BACKUPS", 0) // 0 → node defaults it to 1
+	backups := envInt("MEDUSA_BACKUPS", 0)        // 0 → node defaults it to 1
+	maxEntries := envInt("MEDUSA_MAX_ENTRIES", 0) // 0 → unbounded (no eviction)
 
 	tlsCfg, err := tlsConfigFromEnv()
 	if err != nil {
@@ -66,7 +68,7 @@ func main() {
 	// set, persists a snapshot so the cluster survives a whole-cluster restart.
 	// Backups sets how many copies of each partition the cluster keeps. TLS, when
 	// configured, secures the inter-node transport.
-	node, err := medusa.New(medusa.Config{ID: id, Addr: addr, BindAddr: bindAddr, Seeds: seeds, Discovery: disco, DataDir: dataDir, Backups: backups, TLS: tlsCfg})
+	node, err := medusa.New(medusa.Config{ID: id, Addr: addr, BindAddr: bindAddr, Seeds: seeds, Discovery: disco, DataDir: dataDir, Backups: backups, MaxEntries: maxEntries, TLS: tlsCfg})
 	if err != nil {
 		slog.Error("start node", "err", err)
 		os.Exit(1)

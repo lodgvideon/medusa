@@ -29,6 +29,7 @@ func TestWriteProm(t *testing.T) {
 		"medusa_migrations_total",
 		"medusa_members_evicted_total",
 		"medusa_entries_reconciled_total 5",
+		"medusa_entries_evicted_total",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("metrics output missing %q\n---\n%s", want, out)

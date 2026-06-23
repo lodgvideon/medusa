@@ -46,6 +46,11 @@ const snapshotInterval = 30 * time.Second
 // converge to the owner within roughly Count/antiEntropyBatch ticks.
 const antiEntropyBatch = 8
 
+// evictBatch caps how many over-cap entries a single maintenance tick evicts, so
+// a large overshoot drains over several ticks instead of stalling the loop in one
+// long pass of replicated removes.
+const evictBatch = 1024
+
 const snapshotFile = "snapshot.pb"
 
 // walFile is the write-ahead log, replayed on top of the snapshot at startup and
@@ -54,12 +59,13 @@ const walFile = "wal.log"
 
 // Node is a single member of a Medusa cluster.
 type Node struct {
-	mem     *cluster.Membership
-	maps    *imap.Service
-	tr      transport.Transport
-	disco   discovery.Discoverer
-	log     *slog.Logger
-	dataDir string
+	mem        *cluster.Membership
+	maps       *imap.Service
+	tr         transport.Transport
+	disco      discovery.Discoverer
+	log        *slog.Logger
+	dataDir    string
+	maxEntries int // soft per-node entry cap; 0 = unbounded (no eviction)
 
 	maintCancel         context.CancelFunc
 	maintDone           chan struct{}
@@ -104,6 +110,14 @@ type Config struct {
 	// MaintenanceInterval overrides how often the node retries joining and
 	// gossips. Zero uses defaultMaintenanceInterval.
 	MaintenanceInterval time.Duration
+	// MaxEntries caps how many live entries this node holds before it starts
+	// evicting (a soft, per-node bound to prevent unbounded memory growth). Zero
+	// means unbounded (no eviction — the default). When over the cap, the
+	// maintenance loop removes a batch of this node's OWNED entries (a roughly
+	// random selection), replicating each removal so backups stay consistent. It
+	// is a cache-style bound: eviction deletes the entries cluster-wide, so enable
+	// it only for maps that tolerate losing entries under pressure.
+	MaxEntries int
 	// Logger receives structured logs. Zero uses slog.Default().
 	Logger *slog.Logger
 	// DataDir, when set, enables persistence: the node loads a snapshot from it
@@ -160,7 +174,7 @@ func New(cfg Config) (*Node, error) {
 	if disco == nil {
 		disco = discovery.Static(cfg.Seeds)
 	}
-	n := &Node{tr: tr, disco: disco, log: logger.With("node", id), dataDir: cfg.DataDir}
+	n := &Node{tr: tr, disco: disco, log: logger.With("node", id), dataDir: cfg.DataDir, maxEntries: cfg.MaxEntries}
 	n.mem = cluster.New(cluster.Member{ID: id, Addr: cfg.Addr}, tr, backups)
 	n.maps = imap.NewService(n.mem, tr)
 	// Seed with the initial table epoch so the first (self-only) table build is
@@ -271,6 +285,15 @@ func (n *Node) maintain(ctx context.Context, interval time.Duration) {
 			// Reclaim expired entries (lazy expiry already hides them on read).
 			if swept := n.maps.SweepExpired(); swept > 0 {
 				metrics.Swept.Add(int64(swept))
+			}
+			// Enforce the soft per-node entry cap (evict owned entries, replicated
+			// so backups stay consistent), bounded per tick so a big overshoot
+			// drains over several ticks rather than stalling the loop.
+			if n.maxEntries > 0 {
+				if ev := n.maps.Evict(ctx, n.maxEntries, evictBatch); ev > 0 {
+					metrics.EvictedEntries.Add(int64(ev))
+					n.log.Info("evicted entries (max-size)", "count", ev, "max", n.maxEntries)
+				}
 			}
 			// Checkpoint when one is due (post-rebalance or a prior failure) or the
 			// periodic interval elapsed. On failure checkpointDue stays set, so the

@@ -475,6 +475,45 @@ func TestWALReplayMatchesLiveUnderConcurrentConflict(t *testing.T) {
 	run("putclear", 100, func(s *Service) { _, _ = s.localClearMap("m") })
 }
 
+// TestSampleOwnedSkipsUnowned verifies eviction sampling only considers owned
+// partitions — a backup copy must never be picked (anti-entropy would re-push it).
+func TestSampleOwnedSkipsUnowned(t *testing.T) {
+	st := newStore()
+	st.put(0, "m", []byte("a"), []byte("v"), 0)
+	st.put(1, "m", []byte("b"), []byte("v"), 0)
+	got := st.sampleOwned(func(p int) bool { return p == 0 }, 10)
+	if len(got) != 1 || got[0].key != "a" {
+		t.Fatalf("sampleOwned(owned=={0}) = %+v, want only key a", got)
+	}
+}
+
+// TestEvictEnforcesCap covers the max-size eviction: it drains the store toward
+// the cap, is bounded per call by the batch, is a no-op under the cap, and is
+// disabled when max <= 0.
+func TestEvictEnforcesCap(t *testing.T) {
+	s := svcWith(&fakeTransport{}) // single node owns all partitions, no WAL/replication
+	ctx := context.Background()
+	for i := 0; i < 50; i++ {
+		s.store.put(partition.For([]byte{byte(i)}), "m", []byte{byte(i)}, []byte("v"), 0)
+	}
+	if got := s.store.entryCount(); got != 50 {
+		t.Fatalf("seed count = %d, want 50", got)
+	}
+	if ev := s.Evict(ctx, 30, 1000); ev != 20 || s.store.entryCount() != 30 {
+		t.Fatalf("evict to 30: removed %d, count %d; want 20, 30", ev, s.store.entryCount())
+	}
+	if ev := s.Evict(ctx, 30, 1000); ev != 0 {
+		t.Fatalf("evict under cap removed %d, want 0", ev)
+	}
+	if ev := s.Evict(ctx, 0, 1000); ev != 0 {
+		t.Fatalf("evict with max=0 (disabled) removed %d, want 0", ev)
+	}
+	// batch caps a single call: 30 entries, cap 10 → excess 20, batch 5 → remove 5.
+	if ev := s.Evict(ctx, 10, 5); ev != 5 || s.store.entryCount() != 25 {
+		t.Fatalf("batch-capped evict: removed %d, count %d; want 5, 25", ev, s.store.entryCount())
+	}
+}
+
 func TestHandleRejectsCorruptPayload(t *testing.T) {
 	svc := svcWith(&fakeTransport{})
 	bad := []byte{0xff, 0xff, 0xff} // not a valid protobuf message

@@ -477,6 +477,32 @@ func remainingTTLms(expireAt, now int64) int64 {
 // LocalEntryCount returns the number of live entries this node currently stores.
 func (s *Service) LocalEntryCount() int { return s.store.entryCount() }
 
+// Evict enforces a soft per-node cap: if this node holds more than max live
+// entries, it removes up to batch of its OWNED entries (a roughly random
+// selection) to drain toward the cap, replicating each removal (isBackup=false)
+// so backups stay consistent — a normal distributed delete. It returns the number
+// removed. max <= 0 disables it. Only owned entries are evicted; a backup copy is
+// the owner's responsibility (and anti-entropy would re-push it).
+func (s *Service) Evict(ctx context.Context, max, batch int) int {
+	if max <= 0 {
+		return 0
+	}
+	n := s.store.entryCount()
+	if n <= max {
+		return 0
+	}
+	excess := n - max
+	if excess > batch {
+		excess = batch
+	}
+	tbl := s.mem.Table()
+	victims := s.store.sampleOwned(func(p int) bool { return tbl.OwnerOf(p) == s.self }, excess)
+	for _, e := range victims {
+		_, _ = s.applyRemove(ctx, e.mapName, []byte(e.key), false)
+	}
+	return len(victims)
+}
+
 // localMapSize counts the live entries in the named map that this node OWNS
 // (entries in partitions it is the current owner of), so a cluster-wide sum
 // counts each entry once and never a backup copy.

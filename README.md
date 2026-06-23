@@ -86,6 +86,14 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
 - **Entry TTL** — `Map.PutTTL` (or `PUT …?ttl=5s`) sets a per-entry expiry;
   expired entries read as absent (lazy) and are reclaimed by a background sweeper
   (active). TTL is replicated to backups and preserved across migration.
+- **Bounded memory (max-size eviction)** — `Config.MaxEntries` (env
+  `MEDUSA_MAX_ENTRIES`, default 0 = unbounded) sets a soft per-node entry cap.
+  When over it the maintenance loop evicts a bounded batch of the node's *owned*
+  entries (a roughly random selection — no per-access bookkeeping, so the hot
+  read path stays alloc-free), replicating each removal so backups stay
+  consistent and anti-entropy won't resurrect them. It is cache-style: eviction
+  deletes the entries cluster-wide, so enable it only where losing entries under
+  pressure is acceptable. `medusa_entries_evicted_total` counts them.
 - **Observability** — a Prometheus `GET /metrics` endpoint (hand-rolled, no
   dependency) exposes op counts, members, entries, evictions, migrations,
   anti-entropy re-pushes, and TTL sweeps; structured logs via stdlib `slog`
@@ -280,7 +288,8 @@ A 3-node cluster ships in [`k8s/medusa.yaml`](k8s/medusa.yaml) (headless Service
 for peer DNS, ClusterIP Service for the admin API, StatefulSet with health
 probes). The node binary is `cmd/medusa-node`, configured via env
 (`MEDUSA_ID`, `MEDUSA_ADDR`, `MEDUSA_DISCOVERY`, `MEDUSA_BACKUPS`,
-`MEDUSA_DATA_DIR`); nodes self-assemble via a background maintenance loop that
+`MEDUSA_MAX_ENTRIES`, `MEDUSA_DATA_DIR`); nodes self-assemble via a background
+maintenance loop that
 retries joining until the cluster converges.
 
 Peers are found by **auto-discovery**: the manifest sets

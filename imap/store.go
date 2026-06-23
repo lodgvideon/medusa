@@ -312,6 +312,40 @@ func (s *store) countMap(name string, owned func(p int) bool) int {
 	return n
 }
 
+// sampleOwned collects up to limit live entries from the partitions owned reports
+// true for, for max-size eviction. Map iteration order is unspecified, so the
+// selection is effectively random — no per-access bookkeeping, so the read hot
+// path stays allocation-free. Only owned partitions are sampled: evicting a backup
+// copy would be futile (anti-entropy re-pushes it from the owner).
+func (s *store) sampleOwned(owned func(p int) bool, limit int) []entry {
+	if limit <= 0 {
+		return nil
+	}
+	now := nowNano()
+	out := make([]entry, 0, limit)
+	for p := range s.shards {
+		if !owned(p) {
+			continue
+		}
+		sh := &s.shards[p]
+		sh.mu.RLock()
+		for name, inner := range sh.m {
+			for k, v := range inner {
+				if v.expired(now) {
+					continue
+				}
+				out = append(out, entry{mapName: name, key: k})
+				if len(out) >= limit {
+					sh.mu.RUnlock()
+					return out
+				}
+			}
+		}
+		sh.mu.RUnlock()
+	}
+	return out
+}
+
 // clearMap removes every entry for the named map across all shards — owner and
 // backup copies alike — and returns the removed entries so the caller can record
 // the deletions durably (the WAL). A broadcast of clearMap to all members empties

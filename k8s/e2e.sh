@@ -112,12 +112,12 @@ fi
 # Active anti-entropy is cluster-visible behavior; assert its counter is exported
 # (named explicitly so dropping it from WriteProm fails the suite, not just a
 # generic series count).
-echo "=== test: anti-entropy metric ==="
-out=$(incluster 'curl -s medusa-0.medusa:8080/metrics | grep -c "^medusa_entries_reconciled_total "')
-if [ "${out:-0}" -ge 1 ] 2>/dev/null; then
-  ok "medusa_entries_reconciled_total exported"
+echo "=== test: anti-entropy + eviction metrics ==="
+out=$(incluster 'curl -s medusa-0.medusa:8080/metrics | grep -cE "^medusa_entries_(reconciled|evicted)_total "')
+if [ "${out:-0}" -ge 2 ] 2>/dev/null; then
+  ok "anti-entropy + max-size-eviction counters exported"
 else
-  bad "anti-entropy metric missing -> $out"
+  bad "expected both entries_reconciled/evicted counters -> $out"
 fi
 
 # ---- test: TTL expiry ----
