@@ -45,6 +45,40 @@ func TestCASProc(t *testing.T) {
 	}
 }
 
+// TestLockProcs covers the fenced-lock processors: acquire, contention,
+// re-entrant acquire (same token), holder-only release, fence retention, and the
+// fence bumping strictly on the next acquire.
+func TestLockProcs(t *testing.T) {
+	h1, h2 := []byte("n1"), []byte("n2")
+
+	nv, a, out := lockAcquireProc(nil, false, h1)
+	if a != Set || len(out) != 8 || binary.BigEndian.Uint64(out) != 1 {
+		t.Fatalf("first acquire: action=%v out=%v; want set, fence 1", a, out)
+	}
+	state := nv
+
+	if _, a, out = lockAcquireProc(state, true, h2); a != Keep || len(out) != 0 {
+		t.Fatalf("contended acquire: action=%v out=%v; want keep, empty", a, out)
+	}
+	if _, a, out = lockAcquireProc(state, true, h1); a != Keep || binary.BigEndian.Uint64(out) != 1 {
+		t.Fatalf("re-entrant acquire: action=%v out=%v; want keep, fence 1", a, out)
+	}
+	if _, a, out = lockReleaseProc(state, true, h2); a != Keep || out[0] != 0 {
+		t.Fatalf("non-holder release: action=%v out=%v; want keep, [0]", a, out)
+	}
+
+	nv, a, out = lockReleaseProc(state, true, h1)
+	if a != Set || out[0] != 1 {
+		t.Fatalf("release: action=%v out=%v; want set, [1]", a, out)
+	}
+	if f, holder := decodeLock(nv); f != 1 || len(holder) != 0 {
+		t.Fatalf("released state: fence=%d holder=%q; want 1, empty", f, holder)
+	}
+	if _, a, out = lockAcquireProc(nv, true, h2); a != Set || binary.BigEndian.Uint64(out) != 2 {
+		t.Fatalf("re-acquire after release: action=%v out=%v; want set, fence 2", a, out)
+	}
+}
+
 // TestRegisterAndExecuteCustomProcessor covers custom processor registration and
 // the execute path end to end, including its write-ahead-log records for both a
 // Set (the custom processor) and a Delete (the built-in "delete"), plus the

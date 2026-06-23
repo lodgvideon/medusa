@@ -34,6 +34,8 @@ var (
 		"delete":      deleteProc,
 		"putifabsent": putIfAbsentProc,
 		"cas":         casProc,
+		"lockacquire": lockAcquireProc,
+		"lockrelease": lockReleaseProc,
 	}
 )
 
@@ -130,6 +132,64 @@ func splitCAS(arg []byte) (expected, newVal []byte, ok bool) {
 		return nil, nil, false
 	}
 	return arg[4 : 4+n], arg[4+n:], true
+}
+
+// A fenced-lock entry is [8-byte big-endian fence][holder]. It is "held" when
+// holder is non-empty and "free" when holder is empty; the entry persists even
+// while free so the fence stays monotonic across acquire/release cycles. The
+// fence is a monotonically increasing token a holder can hand to downstream
+// services so a stale holder (one that lost the lock during a pause) is detected
+// — the standard fix for the at-least-once ambiguity of plain putIfAbsent.
+//
+// This is a single-owner lock, not a consensus lock: it is as correct as the
+// partition's single-owner model, and the fence is what makes a stale holder
+// detectable rather than silently dangerous.
+func encodeLock(fence uint64, holder []byte) []byte {
+	b := make([]byte, 8+len(holder))
+	binary.BigEndian.PutUint64(b, fence)
+	copy(b[8:], holder)
+	return b
+}
+
+func decodeLock(b []byte) (fence uint64, holder []byte) {
+	if len(b) < 8 {
+		return 0, nil
+	}
+	return binary.BigEndian.Uint64(b[:8]), b[8:]
+}
+
+func fenceBytes(f uint64) []byte {
+	b := make([]byte, 8)
+	binary.BigEndian.PutUint64(b, f)
+	return b
+}
+
+// lockAcquireProc acquires the lock for the caller (arg = holder id). It returns
+// the 8-byte fence token on success and an empty result when the lock is held by
+// a different holder. Acquiring a lock you already hold is idempotent and returns
+// your existing token — which makes the at-least-once failover retry safe (the
+// retry sees its own holder and gets the same token instead of a false "lost").
+func lockAcquireProc(cur []byte, _ bool, arg []byte) ([]byte, Action, []byte) {
+	fence, holder := decodeLock(cur)
+	if len(holder) > 0 {
+		if !bytes.Equal(holder, arg) {
+			return nil, Keep, nil // held by someone else
+		}
+		return nil, Keep, fenceBytes(fence) // re-entrant: same token, no state change
+	}
+	fence++ // free (absent or released): bump the fence and take it
+	return encodeLock(fence, arg), Set, fenceBytes(fence)
+}
+
+// lockReleaseProc releases the lock if the caller (arg = holder id) holds it,
+// returning [1] on success and [0] otherwise. The fence is retained (holder
+// cleared) so the next acquire bumps strictly past it.
+func lockReleaseProc(cur []byte, _ bool, arg []byte) ([]byte, Action, []byte) {
+	fence, holder := decodeLock(cur)
+	if len(holder) == 0 || !bytes.Equal(holder, arg) {
+		return nil, Keep, []byte{0}
+	}
+	return encodeLock(fence, nil), Set, []byte{1}
 }
 
 func readInt64(b []byte) int64 {

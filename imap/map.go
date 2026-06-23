@@ -2,6 +2,7 @@ package imap
 
 import (
 	"context"
+	"encoding/binary"
 	"time"
 
 	"github.com/lodgvideon/medusa/metrics"
@@ -231,6 +232,38 @@ func (mp *Map) PutIfAbsent(ctx context.Context, key, value []byte) (bool, error)
 // must be known exactly.
 func (mp *Map) CompareAndSwap(ctx context.Context, key, expected, newVal []byte) (bool, error) {
 	out, err := mp.Execute(ctx, key, "cas", encodeCAS(expected, newVal))
+	if err != nil {
+		return false, err
+	}
+	return len(out) == 1 && out[0] == 1, nil
+}
+
+// Lock attempts to acquire a fenced lock named key on behalf of holder (a value
+// unique to the caller, e.g. a node id or UUID). It returns a monotonically
+// increasing fence token and true on success, or 0 and false if the lock is held
+// by a different holder. The token lets a holder prove ownership to downstream
+// services so a stale holder (one paused past its turn) is detected.
+//
+// Acquiring a lock you already hold returns your existing token (idempotent), so
+// a retry after an ambiguous/owner-failover call is safe — it returns the token
+// rather than a false negative. The fence survives release and ownership
+// migration. Manage a lock key only through Lock/Unlock — not Put/Get/Remove.
+func (mp *Map) Lock(ctx context.Context, key, holder []byte) (token uint64, acquired bool, err error) {
+	out, err := mp.Execute(ctx, key, "lockacquire", holder)
+	if err != nil {
+		return 0, false, err
+	}
+	if len(out) != 8 {
+		return 0, false, nil // held by another holder
+	}
+	return binary.BigEndian.Uint64(out), true, nil
+}
+
+// Unlock releases a fenced lock held by holder, returning whether it was released
+// (false if the caller did not hold it). The fence token is retained so the next
+// acquire is strictly greater.
+func (mp *Map) Unlock(ctx context.Context, key, holder []byte) (bool, error) {
+	out, err := mp.Execute(ctx, key, "lockrelease", holder)
 	if err != nil {
 		return false, err
 	}

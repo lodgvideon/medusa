@@ -150,6 +150,37 @@ func TestPutIfAbsentSingleWinner(t *testing.T) {
 	}
 }
 
+// TestFencedLockDistributed proves the fenced lock across nodes: acquire,
+// contention by a different holder, idempotent re-entrant acquire (same token),
+// holder-only release, and a strictly greater fence on the next acquisition.
+func TestFencedLockDistributed(t *testing.T) {
+	f := newFixture()
+	a, b, c := f.cluster3(t)
+	ctx := context.Background()
+	key := []byte("mutex")
+	n1, n2 := []byte("node-1"), []byte("node-2")
+
+	tok, ok, err := a.svc.Map("locks").Lock(ctx, key, n1)
+	if err != nil || !ok || tok != 1 {
+		t.Fatalf("acquire = %d,%v,%v; want 1,true,nil", tok, ok, err)
+	}
+	if _, ok, err := b.svc.Map("locks").Lock(ctx, key, n2); err != nil || ok {
+		t.Fatalf("contended acquire = %v,%v; want false,nil", ok, err)
+	}
+	if tok2, ok, err := c.svc.Map("locks").Lock(ctx, key, n1); err != nil || !ok || tok2 != 1 {
+		t.Fatalf("re-entrant acquire = %d,%v,%v; want 1,true,nil", tok2, ok, err)
+	}
+	if rel, err := b.svc.Map("locks").Unlock(ctx, key, n2); err != nil || rel {
+		t.Fatalf("non-holder unlock = %v,%v; want false,nil", rel, err)
+	}
+	if rel, err := a.svc.Map("locks").Unlock(ctx, key, n1); err != nil || !rel {
+		t.Fatalf("unlock = %v,%v; want true,nil", rel, err)
+	}
+	if tok3, ok, err := b.svc.Map("locks").Lock(ctx, key, n2); err != nil || !ok || tok3 != 2 {
+		t.Fatalf("re-acquire = %d,%v,%v; want 2,true,nil (fence must advance)", tok3, ok, err)
+	}
+}
+
 func TestPutGetAcrossNodes(t *testing.T) {
 	f := newFixture()
 	a, b, c := f.cluster3(t)

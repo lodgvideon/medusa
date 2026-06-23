@@ -40,8 +40,16 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   the `putifabsent` and `cas` processors too. Like all `Execute` ops they are
   at-least-once under owner failover (a lost response + retry can report a false
   negative for a write that actually applied), so for strict locking use a
-  caller-unique value and read it back to confirm ownership — see the doc
-  comments and the fencing-token roadmap item.
+  caller-unique value and read it back to confirm ownership.
+- **Fenced locks** — `Map.Lock(key, holder)` returns a monotonically increasing
+  **fence token** (and whether it was acquired); `Map.Unlock(key, holder)`
+  releases it. The token lets a holder prove ownership to a downstream service so
+  a stale holder (one paused past its turn) is detected — the standard fix for
+  the lock-safety problem. Acquiring a lock you already hold returns your existing
+  token (idempotent), so a failover retry is safe rather than a false negative.
+  It is a single-owner lock (as correct as the partition's owner model, not a
+  consensus lock); the fence survives release and migration. Built on the same
+  atomic owner-side processors (`lockacquire`/`lockrelease`).
 - **Replication (configurable factor)** — every write is synchronously copied to
   `Backups` distinct backup owners (default 1; env `MEDUSA_BACKUPS`). A cluster
   tolerates that many simultaneous holder failures with no data loss: when the

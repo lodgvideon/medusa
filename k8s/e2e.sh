@@ -161,6 +161,20 @@ else
   bad "putIfAbsent -> $out (want \"first\")"
 fi
 
+# ---- test: fenced lock (acquire / contend) ----
+# Acquiring returns an 8-byte fence token; a contending holder on another pod
+# gets an empty body (lock held). Assert byte counts, which are printable.
+echo "=== test: fenced lock (acquire + contention) ==="
+out=$(incluster '
+  a=$(curl -s -X POST --data-binary node-1 "medusa-0.medusa:8080/v1/maps/g/mutexkey/execute?proc=lockacquire" | wc -c)
+  b=$(curl -s -X POST --data-binary node-2 "medusa-2.medusa:8080/v1/maps/g/mutexkey/execute?proc=lockacquire" | wc -c)
+  echo "token=$a contended=$b"')
+if echo "$out" | grep -q "token=8 contended=0"; then
+  ok "fenced lock acquired (8-byte token); cross-pod contender was refused"
+else
+  bad "fenced lock -> $out (want token=8 contended=0)"
+fi
+
 # ---- test: scale-out migration (3 -> 5) ----
 echo "=== test: scale-out migration ==="
 kubectl scale statefulset/medusa --replicas=5 >/dev/null
