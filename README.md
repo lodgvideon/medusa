@@ -74,6 +74,13 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   coordinator: each node derives an identical partition table from the (sorted)
   member set. Crashes are survived with zero data loss (verified in k8s by
   force-killing a pod).
+- **Node auto-discovery** — instead of a hand-maintained seed list, point a node
+  at a DNS name (`MEDUSA_DISCOVERY=dns:medusa`) and the maintenance loop resolves
+  it to the current peer set every tick. Aimed at a Kubernetes headless Service:
+  the cluster self-assembles and scaling the StatefulSet up or down needs no
+  config change. A static seed list stays available behind the same
+  `discovery.Discoverer` interface (`Config.Discovery`), so the mechanism is
+  pluggable and the default is unchanged.
 - **Poseidon HTTP/2 transport** — node-to-node RPC runs over the
   [poseidon-http-client](https://github.com/lodgvideon/poseidon-http-client) /
   [poseidon-http-server](https://github.com/lodgvideon/poseidon-http-server)
@@ -109,6 +116,7 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
 | `transport`  | `Transport` interface with three implementations: Poseidon HTTP/2 (default), raw framed TCP, and an in-memory `Switch`. |
 | `partition`  | `For(key)` hash and the deterministic partition→owner/backup `Table`. |
 | `cluster`    | `Membership`: join, gossip, heartbeat eviction; derives the partition table. |
+| `discovery`  | `Discoverer` interface for finding peers: a `Static` seed list or `DNS` resolution (e.g. a headless Service). |
 | `imap`       | The distributed map: owner routing, backup replication, sharded local store. |
 | `medusa`     | `Node`: wires the layers together and dispatches inbound frames. |
 | `genproto/`  | Generated protobuf code (committed; regenerate with `make gen`). |
@@ -233,9 +241,16 @@ a `docker build` on every push and pull request.
 A 3-node cluster ships in [`k8s/medusa.yaml`](k8s/medusa.yaml) (headless Service
 for peer DNS, ClusterIP Service for the admin API, StatefulSet with health
 probes). The node binary is `cmd/medusa-node`, configured via env
-(`MEDUSA_ID`, `MEDUSA_ADDR`, `MEDUSA_SEEDS`, `MEDUSA_BACKUPS`, `MEDUSA_DATA_DIR`);
-nodes self-assemble via a background maintenance loop that retries joining until
-the cluster converges.
+(`MEDUSA_ID`, `MEDUSA_ADDR`, `MEDUSA_DISCOVERY`, `MEDUSA_BACKUPS`,
+`MEDUSA_DATA_DIR`); nodes self-assemble via a background maintenance loop that
+retries joining until the cluster converges.
+
+Peers are found by **auto-discovery**: the manifest sets
+`MEDUSA_DISCOVERY=dns:medusa`, so each node resolves the headless Service to the
+current pod set every tick (no seed list — scaling needs no manifest change).
+The Service sets `publishNotReadyAddresses: true` so a pod is discoverable the
+instant it starts. Set `MEDUSA_SEEDS` and drop `MEDUSA_DISCOVERY` to fall back to
+a static seed list.
 
 ```bash
 docker build -t medusa:dev .

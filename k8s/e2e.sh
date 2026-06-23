@@ -65,11 +65,14 @@ kubectl apply -f "$MANIFEST" >/dev/null
 kubectl rollout status statefulset/medusa --timeout=120s >/dev/null || { echo "rollout failed"; exit 1; }
 sleep 12 # let the maintenance loop converge
 
-# ---- test: cluster formation ----
-echo "=== test: cluster formation ==="
+# ---- test: cluster formation via DNS auto-discovery ----
+# The manifest configures MEDUSA_DISCOVERY=dns:medusa:7700 (no seed list), so
+# reaching members=3 proves the pods found each other by resolving the headless
+# Service.
+echo "=== test: cluster formation (DNS auto-discovery) ==="
 out=$(incluster 'for n in 0 1 2; do curl -s medusa-$n.medusa:8080/stats; echo; done')
 if [ "$(echo "$out" | grep -c '"members":3')" = "3" ]; then
-  ok "all 3 pods report members=3"
+  ok "all 3 pods report members=3 (discovered via dns:medusa:7700)"
 else
   bad "members != 3 -> $out"
 fi

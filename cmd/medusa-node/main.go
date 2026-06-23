@@ -9,6 +9,9 @@
 //	                  (default: ":7700"; in k8s set to "$(POD_IP):7700")
 //	MEDUSA_HTTP_ADDR  admin/health listen address (default: ":8080")
 //	MEDUSA_SEEDS      comma-separated seed addresses to join (optional)
+//	MEDUSA_DISCOVERY  peer discovery: unset/"static" uses MEDUSA_SEEDS;
+//	                  "dns:<host>" resolves <host> (e.g. a headless Service) to
+//	                  peer IPs each tick; "dns:<host>:<port>" sets the port
 //	MEDUSA_BACKUPS    backup copies per partition / replication factor − 1
 //	                  (default: 1; values below 1 are treated as 1)
 //	MEDUSA_AUTH_TOKEN bearer token required on the admin API (except the
@@ -25,6 +28,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -34,6 +38,7 @@ import (
 	"time"
 
 	"github.com/lodgvideon/medusa"
+	"github.com/lodgvideon/medusa/discovery"
 	"github.com/lodgvideon/medusa/httpapi"
 )
 
@@ -46,6 +51,7 @@ func main() {
 	httpAddr := env("MEDUSA_HTTP_ADDR", ":8080")
 	dataDir := os.Getenv("MEDUSA_DATA_DIR")
 	seeds := splitSeeds(os.Getenv("MEDUSA_SEEDS"))
+	disco, discDesc := discovererFromEnv(os.Getenv("MEDUSA_DISCOVERY"), addr, seeds)
 	backups := envInt("MEDUSA_BACKUPS", 0) // 0 → node defaults it to 1
 
 	tlsCfg, err := tlsConfigFromEnv()
@@ -60,7 +66,7 @@ func main() {
 	// set, persists a snapshot so the cluster survives a whole-cluster restart.
 	// Backups sets how many copies of each partition the cluster keeps. TLS, when
 	// configured, secures the inter-node transport.
-	node, err := medusa.New(medusa.Config{ID: id, Addr: addr, BindAddr: bindAddr, Seeds: seeds, DataDir: dataDir, Backups: backups, TLS: tlsCfg})
+	node, err := medusa.New(medusa.Config{ID: id, Addr: addr, BindAddr: bindAddr, Seeds: seeds, Discovery: disco, DataDir: dataDir, Backups: backups, TLS: tlsCfg})
 	if err != nil {
 		slog.Error("start node", "err", err)
 		os.Exit(1)
@@ -85,7 +91,7 @@ func main() {
 			os.Exit(1)
 		}
 	}()
-	slog.Info("node listening", "id", id, "advertise", addr, "bind", node.Addr(), "http", httpAddr, "seeds", seeds, "backups", node.BackupCount(), "tls", tlsCfg != nil)
+	slog.Info("node listening", "id", id, "advertise", addr, "bind", node.Addr(), "http", httpAddr, "discovery", discDesc, "backups", node.BackupCount(), "tls", tlsCfg != nil)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -148,6 +154,39 @@ func tlsConfigFromEnv() (*tls.Config, error) {
 		cfg.ClientAuth = tls.RequireAndVerifyClientCert
 	}
 	return cfg, nil
+}
+
+// discovererFromEnv builds the peer-discovery strategy from MEDUSA_DISCOVERY:
+//
+//	(unset) / "static"   use the MEDUSA_SEEDS list (classic behaviour)
+//	"dns:<host>"         resolve <host> (e.g. a headless Service) to peer IPs
+//	                     each tick, dialing this node's own data-plane port
+//	"dns:<host>:<port>"  as above with an explicit port
+//
+// It returns the Discoverer and a short description for the startup log.
+func discovererFromEnv(spec, addr string, seeds []string) (discovery.Discoverer, string) {
+	if host, ok := strings.CutPrefix(strings.TrimSpace(spec), "dns:"); ok && host != "" {
+		port := portOf(addr, "7700")
+		if h, p, err := net.SplitHostPort(host); err == nil {
+			// host carried its own ":port". Keep the derived port when that port
+			// is empty (e.g. a "dns:medusa:" typo) rather than clobbering it with
+			// "" — which would build invalid "ip:" dial targets that fail silently.
+			host = h
+			if p != "" {
+				port = p
+			}
+		}
+		return discovery.NewDNS(host, port), "dns:" + net.JoinHostPort(host, port)
+	}
+	return discovery.Static(seeds), "static"
+}
+
+// portOf returns the port of a "host:port" address, or def when it has none.
+func portOf(addr, def string) string {
+	if _, p, err := net.SplitHostPort(addr); err == nil && p != "" {
+		return p
+	}
+	return def
 }
 
 func hostname() string {

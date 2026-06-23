@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -95,6 +96,62 @@ func awaitMembers(t *testing.T, want int, nodes ...*medusa.Node) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("cluster did not reach %d members", want)
+}
+
+// dynDiscoverer is a Discoverer whose peer set changes at runtime, standing in
+// for DNS: a headless Service that publishes a pod only once it is up.
+type dynDiscoverer struct {
+	mu    sync.Mutex
+	addrs []string
+}
+
+func (d *dynDiscoverer) set(addrs ...string) {
+	d.mu.Lock()
+	d.addrs = addrs
+	d.mu.Unlock()
+}
+
+func (d *dynDiscoverer) Discover(context.Context) ([]string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.addrs...), nil
+}
+
+// TestAutoDiscoveryJoinsDynamically verifies the maintenance loop joins through
+// Config.Discovery — and re-runs it every tick — so a node with no seed list
+// stays standalone until the discovery source reveals a peer, then converges.
+func TestAutoDiscoveryJoinsDynamically(t *testing.T) {
+	sw := transport.NewSwitch()
+	a := inmemNode(t, sw, "a", nil) // standalone seed, no discovery
+
+	disco := &dynDiscoverer{} // initially reveals no peers
+	b, err := medusa.New(medusa.Config{
+		ID: "b", Addr: "b", Transport: sw.NewTransport("b"),
+		Discovery: disco, MaintenanceInterval: 40 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("new b: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+
+	// With an empty discovery result, b must remain standalone (only itself).
+	time.Sleep(200 * time.Millisecond)
+	if got := len(b.Members()); got != 1 {
+		t.Fatalf("b joined %d members before discovery yielded peers; want 1 (self only)", got)
+	}
+
+	// The source now reveals a (as a headless Service would once a's pod is up).
+	disco.set("a")
+	awaitMembers(t, 2, a, b)
+}
+
+// TestDefaultDiscoveryUsesSeeds verifies that leaving Discovery unset falls back
+// to the static seed list, preserving backward compatibility.
+func TestDefaultDiscoveryUsesSeeds(t *testing.T) {
+	sw := transport.NewSwitch()
+	a := inmemNode(t, sw, "a", nil)
+	b := inmemNode(t, sw, "b", []string{"a"}) // Seeds, no Discovery
+	awaitMembers(t, 2, a, b)
 }
 
 func TestPersistenceRoundTrip(t *testing.T) {

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/lodgvideon/medusa/cluster"
+	"github.com/lodgvideon/medusa/discovery"
 	medusav1 "github.com/lodgvideon/medusa/genproto/medusa/v1"
 	"github.com/lodgvideon/medusa/imap"
 	"github.com/lodgvideon/medusa/metrics"
@@ -51,7 +52,7 @@ type Node struct {
 	mem     *cluster.Membership
 	maps    *imap.Service
 	tr      transport.Transport
-	seeds   []string
+	disco   discovery.Discoverer
 	log     *slog.Logger
 	dataDir string
 
@@ -78,7 +79,14 @@ type Config struct {
 	BindAddr string
 	// Seeds are cluster addresses the background maintenance loop joins through
 	// while this node is isolated. Safe to include this node's own address.
+	// Ignored when Discovery is set; otherwise it backs a static Discoverer.
 	Seeds []string
+	// Discovery finds the peer addresses the maintenance loop joins through while
+	// this node is isolated. Zero defaults to discovery.Static(Seeds) — the
+	// classic fixed seed list. Set discovery.NewDNS(host, port) to resolve peers
+	// from a name (e.g. a Kubernetes headless Service) so the cluster
+	// self-assembles and scales without a hand-maintained seed list.
+	Discovery discovery.Discoverer
 	// Backups is the number of backup copies kept for every partition (the
 	// replication factor minus one). Each write is synchronously replicated to
 	// this many distinct peers, so the cluster tolerates that many simultaneous
@@ -142,7 +150,11 @@ func New(cfg Config) (*Node, error) {
 	if backups < 1 {
 		backups = 1 // floor: at least one backup so a single failure loses no data
 	}
-	n := &Node{tr: tr, seeds: cfg.Seeds, log: logger.With("node", id), dataDir: cfg.DataDir}
+	disco := cfg.Discovery
+	if disco == nil {
+		disco = discovery.Static(cfg.Seeds)
+	}
+	n := &Node{tr: tr, disco: disco, log: logger.With("node", id), dataDir: cfg.DataDir}
 	n.mem = cluster.New(cluster.Member{ID: id, Addr: cfg.Addr}, tr, backups)
 	n.maps = imap.NewService(n.mem, tr)
 	// Seed with the initial table epoch so the first (self-only) table build is
@@ -197,12 +209,22 @@ func (n *Node) maintain(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if len(n.mem.Members()) <= 1 && len(n.seeds) > 0 {
+			if len(n.mem.Members()) <= 1 {
+				// Isolated: (re)discover peers and try to join them. Discovery is
+				// re-run every tick so a dynamic source (DNS) picks up pods that
+				// appeared since startup; an empty result just means "no peers yet".
 				jctx, cancel := context.WithTimeout(ctx, interval)
-				if err := n.mem.Join(jctx, n.seeds); err != nil {
-					// Expected while bootstrapping (seeds not yet reachable); the
-					// loop retries on the next tick.
-					n.log.Debug("join attempt failed", "seeds", n.seeds, "err", err)
+				switch seeds, err := n.disco.Discover(jctx); {
+				case err != nil:
+					n.log.Debug("peer discovery failed", "err", err)
+				case len(seeds) == 0:
+					// Standalone, or the discovery source has no peers yet — retry.
+				default:
+					if err := n.mem.Join(jctx, seeds); err != nil {
+						// Expected while bootstrapping (peers not yet reachable); the
+						// loop retries on the next tick.
+						n.log.Debug("join attempt failed", "seeds", seeds, "err", err)
+					}
 				}
 				cancel()
 			} else {

@@ -7,8 +7,11 @@
 #          curl localhost:8080/v1/maps/m/k
 # Tear:    kubectl delete -f k8s/medusa.yaml
 ---
-# Headless service: gives each pod a stable DNS name medusa-<ordinal>.medusa,
-# which peers use to reach each other.
+# Headless service: gives each pod a stable DNS name medusa-<ordinal>.medusa
+# (used as the advertised identity), and resolves the bare name `medusa` to the
+# set of pod IPs — which the node's DNS auto-discovery queries to find peers.
+# publishNotReadyAddresses makes a pod discoverable the instant it starts (before
+# its readiness probe passes), so the cluster bootstraps without a seed list.
 apiVersion: v1
 kind: Service
 metadata:
@@ -16,6 +19,7 @@ metadata:
   labels: { app: medusa }
 spec:
   clusterIP: None
+  publishNotReadyAddresses: true
   selector: { app: medusa }
   ports:
     - { name: data, port: 7700 }
@@ -50,7 +54,7 @@ spec:
       terminationGracePeriodSeconds: 10
       containers:
         - name: medusa
-          image: medusa:v8
+          image: medusa:v9
           imagePullPolicy: IfNotPresent
           ports:
             - { name: data, containerPort: 7700 }
@@ -65,10 +69,11 @@ spec:
               value: "$(MEDUSA_ID).medusa:7700"
             - name: MEDUSA_BIND_ADDR
               value: ":7700"
-            # Seed off every pod so any node can bootstrap and a restarted node
-            # rejoins immediately.
-            - name: MEDUSA_SEEDS
-              value: "medusa-0.medusa:7700,medusa-1.medusa:7700,medusa-2.medusa:7700"
+            # Auto-discovery: resolve the headless Service `medusa` to the current
+            # pod IPs every maintenance tick and join them. No seed list to
+            # maintain — scaling the StatefulSet up or down needs no change here.
+            - name: MEDUSA_DISCOVERY
+              value: "dns:medusa:7700"
             # Backup copies per partition (replication factor − 1). 1 tolerates a
             # single node loss; raise it for more simultaneous-failure tolerance
             # at the cost of more write traffic and memory.
