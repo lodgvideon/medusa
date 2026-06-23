@@ -99,6 +99,114 @@ func TestDropMigratedKeepsRacingWrites(t *testing.T) {
 	}
 }
 
+// twoNodeServices builds two map services, a and b, on a shared in-memory switch
+// with backups=1, converged so each sees the other. Returns the services and a's
+// (frozen) partition table — no maintenance loop runs, so the table is stable.
+func twoNodeServices(t *testing.T) (a, b *Service, aMem *cluster.Membership) {
+	t.Helper()
+	sw := transport.NewSwitch()
+	mk := func(id string) (*Service, *cluster.Membership) {
+		tr := sw.NewTransport(id)
+		mem := cluster.New(cluster.Member{ID: id, Addr: id}, tr, 1)
+		svc := NewService(mem, tr)
+		h := func(rt medusav1.MessageType, req, rb []byte) (medusav1.MessageType, []byte, error) {
+			switch rt {
+			case medusav1.MessageType_MESSAGE_TYPE_JOIN_REQUEST,
+				medusav1.MessageType_MESSAGE_TYPE_MEMBER_LIST,
+				medusav1.MessageType_MESSAGE_TYPE_HEARTBEAT:
+				return mem.Handle(rt, req, rb)
+			default:
+				return svc.Handle(rt, req, rb)
+			}
+		}
+		if err := tr.Listen(h); err != nil {
+			t.Fatalf("listen %s: %v", id, err)
+		}
+		t.Cleanup(func() { _ = tr.Close() })
+		return svc, mem
+	}
+	aSvc, am := mk("a")
+	bSvc, bm := mk("b")
+	if err := bm.Join(context.Background(), []string{"a"}); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+	if len(am.Members()) != 2 || len(bm.Members()) != 2 {
+		t.Fatalf("not converged: a=%d b=%d", len(am.Members()), len(bm.Members()))
+	}
+	return aSvc, bSvc, am
+}
+
+// ownedByAWithBackupB finds a partition + key whose owner is a and first backup b.
+func ownedByAWithBackupB(t *testing.T, tbl *partition.Table) (int, []byte) {
+	t.Helper()
+	for i := 0; i < 200000; i++ {
+		k := []byte{byte(i), byte(i >> 8), byte(i >> 16)}
+		p := partition.For(k)
+		if tbl.OwnerOf(p) == "a" {
+			if b0, ok := tbl.BackupAt(p, 0); ok && b0 == "b" {
+				return p, k
+			}
+		}
+	}
+	t.Fatal("no partition owned by a with backup b")
+	return 0, nil
+}
+
+// TestSyncBackupsHealsDivergentBackup is the core anti-entropy property: a backup
+// that is missing an entry the owner holds (as if it had missed a best-effort
+// replication) is healed by an anti-entropy pass over that partition.
+func TestSyncBackupsHealsDivergentBackup(t *testing.T) {
+	a, b, aMem := twoNodeServices(t)
+	tbl := aMem.Table()
+	p, key := ownedByAWithBackupB(t, tbl)
+
+	// Simulate a missed replication: the entry exists only on the owner.
+	a.store.put(p, "m", key, []byte("v"), 0)
+	if _, ok := b.store.get(p, "m", key); ok {
+		t.Fatal("precondition: backup should not have the entry yet")
+	}
+
+	pushed, next := a.SyncBackups(context.Background(), tbl, p, 1)
+	if pushed != 1 {
+		t.Fatalf("pushed %d entries, want 1", pushed)
+	}
+	if next != (p+1)%partition.Count {
+		t.Fatalf("next cursor = %d, want %d", next, (p+1)%partition.Count)
+	}
+	if v, ok := b.store.get(p, "m", key); !ok || string(v) != "v" {
+		t.Fatalf("backup not healed: got %q,%v want \"v\",true", v, ok)
+	}
+}
+
+// TestSyncBackupsOnlyOwnerPushes verifies a node does not push partitions it does
+// not own (the owner is the single source of truth) and that the cursor wraps.
+func TestSyncBackupsOnlyOwnerPushes(t *testing.T) {
+	a, _, aMem := twoNodeServices(t)
+	tbl := aMem.Table()
+
+	// A partition a does NOT own: put a local entry and confirm SyncBackups skips it.
+	var foreign int = -1
+	for i := 0; i < 200000; i++ {
+		k := []byte{byte(i), byte(i >> 8), byte(i >> 16)}
+		if p := partition.For(k); tbl.OwnerOf(p) == "b" {
+			a.store.put(p, "m", k, []byte("stale"), 0)
+			foreign = p
+			break
+		}
+	}
+	if foreign < 0 {
+		t.Fatal("no partition owned by b")
+	}
+	if pushed, _ := a.SyncBackups(context.Background(), tbl, foreign, 1); pushed != 0 {
+		t.Fatalf("pushed %d for a non-owned partition, want 0", pushed)
+	}
+
+	// Cursor wraps around Count.
+	if _, next := a.SyncBackups(context.Background(), tbl, partition.Count-1, 1); next != 0 {
+		t.Fatalf("cursor did not wrap: got %d, want 0", next)
+	}
+}
+
 func TestHandleRejectsCorruptPayload(t *testing.T) {
 	svc := svcWith(&fakeTransport{})
 	bad := []byte{0xff, 0xff, 0xff} // not a valid protobuf message

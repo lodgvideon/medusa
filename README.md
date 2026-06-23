@@ -39,6 +39,13 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   backups in replica order until one responds, so losing the owner *and* the
   first backup still succeeds when a second backup exists. The factor is capped
   to however many distinct backups the cluster can supply.
+- **Active anti-entropy** — beneath the synchronous-replication fast path, each
+  owner continuously re-pushes a rotating slice of its partitions to their
+  backups (the maintenance loop cycles through all 271 over ~100s). So a backup
+  that missed a write during a transient blip converges to the owner's state
+  without waiting for a rebalance. It is push-only (heals missing/stale values;
+  digest-based reconciliation of missed deletes is on the roadmap) and the
+  `medusa_entries_reconciled_total` metric counts the re-pushed entries.
 - **Elastic scaling** — when a node joins, the partitions it now owns migrate to
   it automatically (verified in k8s: scaling 3→5 redistributes data and the new
   pods serve their share).
@@ -50,8 +57,9 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   expired entries read as absent (lazy) and are reclaimed by a background sweeper
   (active). TTL is replicated to backups and preserved across migration.
 - **Observability** — a Prometheus `GET /metrics` endpoint (hand-rolled, no
-  dependency) exposes op counts, members, entries, evictions, migrations, and
-  TTL sweeps; structured logs via stdlib `slog` (JSON in the node binary).
+  dependency) exposes op counts, members, entries, evictions, migrations,
+  anti-entropy re-pushes, and TTL sweeps; structured logs via stdlib `slog`
+  (JSON in the node binary).
 - **Security** — set `MEDUSA_AUTH_TOKEN` (or `httpapi.WithToken`) to require an
   `Authorization: Bearer <token>` header on every admin/data route (the
   `/healthz` and `/readyz` probes stay open for the kubelet; the token is
@@ -312,7 +320,9 @@ bash k8s/e2e.sh            # or: go test -tags k8s -run TestK8sE2E -timeout 15m 
 - Group-commit for the write-ahead log: it currently fsyncs on every write
   (durability over throughput), so batching concurrent writes into one fsync
   would raise write throughput without weakening the guarantee.
-- Read-repair / anti-entropy to re-sync replicas that diverged during a failure.
+- Digest-based (Merkle) reconciliation to extend the active anti-entropy push so
+  it also reconciles missed deletes and skips already-in-sync partitions instead
+  of re-pushing them.
 - Intern map names (or use integer map handles) to make the remote read path
   fully zero-alloc.
 - Phi-accrual failure detection with a background heartbeat loop.

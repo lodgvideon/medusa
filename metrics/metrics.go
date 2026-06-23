@@ -20,6 +20,7 @@ var (
 	Swept      atomic.Int64 // entries reclaimed by TTL expiry
 	Evicted    atomic.Int64 // peers removed by failure detection
 	Migrations atomic.Int64 // partition-migration passes run
+	Reconciled atomic.Int64 // entries re-pushed to backups by anti-entropy
 )
 
 // Gauges are the point-in-time values sampled when /metrics is scraped.
@@ -52,6 +53,8 @@ func WriteProm(w io.Writer, g Gauges) {
 	fmt.Fprintf(w, "# TYPE medusa_members_evicted_total counter\nmedusa_members_evicted_total %d\n", Evicted.Load())
 	fmt.Fprintf(w, "# HELP medusa_migrations_total Partition-migration passes run.\n")
 	fmt.Fprintf(w, "# TYPE medusa_migrations_total counter\nmedusa_migrations_total %d\n", Migrations.Load())
+	fmt.Fprintf(w, "# HELP medusa_entries_reconciled_total Entries re-pushed to backups by anti-entropy.\n")
+	fmt.Fprintf(w, "# TYPE medusa_entries_reconciled_total counter\nmedusa_entries_reconciled_total %d\n", Reconciled.Load())
 
 	gauge("medusa_cluster_members", "Current number of cluster members.", g.Members)
 	gauge("medusa_map_entries", "Live entries stored on this node.", g.LocalEntries)

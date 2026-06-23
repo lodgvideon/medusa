@@ -312,6 +312,52 @@ func (s *Service) Migrate(ctx context.Context, table *partition.Table) {
 	}
 }
 
+// SyncBackups is active anti-entropy: it re-pushes the entries of the partitions
+// this node OWNS, starting at partition `start` and covering `batch` of them, to
+// their current backups — so a replica that missed a best-effort write (a
+// transient blip during replicate, before the owner could evict it) converges to
+// the owner's state. It returns how many entries were pushed and the partition
+// index to resume from next time, so the caller can rotate through all
+// partitions over successive maintenance ticks at a bounded per-tick cost.
+//
+// It is a slow background safety net beneath the synchronous-replication fast
+// path: idempotent (redundant pushes carry the same value), and push-only — it
+// heals a backup that is MISSING or STALE for a key, but does not remove a key a
+// backup kept after missing a delete (digest-based full reconciliation that also
+// reconciles tombstones is the roadmap). Only owned partitions are pushed, so the
+// owner stays the single source of truth.
+func (s *Service) SyncBackups(ctx context.Context, table *partition.Table, start, batch int) (pushed, next int) {
+	now := nowNano()
+	p := ((start % partition.Count) + partition.Count) % partition.Count
+	for k := 0; k < batch; k++ {
+		if table.OwnerOf(p) == s.self {
+			if entries := s.store.snapshotPartition(p); len(entries) > 0 {
+				for i, n := 0, table.NumBackups(p); i < n; i++ {
+					b, ok := table.BackupAt(p, i)
+					if !ok || b == s.self {
+						continue
+					}
+					addr, ok := s.mem.AddrOf(b)
+					if !ok {
+						continue
+					}
+					for _, e := range entries {
+						ttlMs := remainingTTLms(e.expireAt, now)
+						if e.expireAt != 0 && ttlMs <= 0 {
+							continue // expired in flight; let it lapse
+						}
+						if err := s.sendPut(ctx, addr, e.mapName, []byte(e.key), e.value, ttlMs, true); err == nil {
+							pushed++
+						}
+					}
+				}
+			}
+		}
+		p = (p + 1) % partition.Count
+	}
+	return pushed, p
+}
+
 // remainingTTLms returns the milliseconds left until expireAt (0 for an entry
 // that never expires).
 func remainingTTLms(expireAt, now int64) int64 {

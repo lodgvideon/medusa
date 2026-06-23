@@ -41,6 +41,11 @@ const tombstoneTTL = 5 * time.Minute
 // snapshotInterval is how often a node persists its store when a DataDir is set.
 const snapshotInterval = 30 * time.Second
 
+// antiEntropyBatch is how many partitions each maintenance tick re-pushes to
+// their backups. The loop rotates through all 271 partitions, so backups
+// converge to the owner within roughly Count/antiEntropyBatch ticks.
+const antiEntropyBatch = 8
+
 const snapshotFile = "snapshot.pb"
 
 // walFile is the write-ahead log, replayed on top of the snapshot at startup and
@@ -62,6 +67,7 @@ type Node struct {
 	lastMigratedVersion uint64
 	lastSaveNano        int64
 	checkpointDue       bool // a rebalance dropped partitions (or a checkpoint failed): checkpoint ASAP
+	reconcileCursor     int  // next partition for the rotating anti-entropy pass
 }
 
 // Config configures a Node.
@@ -236,6 +242,17 @@ func (n *Node) maintain(ctx context.Context, interval time.Duration) {
 					n.log.Warn("evicted unresponsive peers", "peers", evicted)
 				}
 				n.mem.PruneTombstones(tombstoneTTL)
+				// Active anti-entropy: re-push a rotating slice of owned partitions
+				// to their backups so a replica that missed a write converges. Bound
+				// it to one interval so a slow/unreachable backup can't stall the
+				// loop's gossip and failure detection.
+				aeCtx, cancel := context.WithTimeout(ctx, interval)
+				synced, cursor := n.maps.SyncBackups(aeCtx, n.mem.Table(), n.reconcileCursor, antiEntropyBatch)
+				cancel()
+				n.reconcileCursor = cursor
+				if synced > 0 {
+					metrics.Reconciled.Add(int64(synced))
+				}
 			}
 			// When the partition table changes (a node joined, left, or was
 			// evicted), move the data that this node no longer owns to its new
