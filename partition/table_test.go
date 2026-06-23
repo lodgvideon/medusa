@@ -129,6 +129,28 @@ func TestTableMinimalMovementOnJoin(t *testing.T) {
 	}
 }
 
+// TestTableMinimalBackupMovementOnJoin guards the minimal-movement property for
+// backups (not just owners): adding a member changes the first backup only for
+// partitions where the newcomer lands in the top two ranks (~2·Count/n), not for
+// most of them as round-robin would. A comparator regression that thrashed
+// backups on every rebuild — causing needless Migrate traffic — would trip this.
+func TestTableMinimalBackupMovementOnJoin(t *testing.T) {
+	before := partition.NewTable([]string{"a", "b", "c", "d"}, 1)
+	after := partition.NewTable([]string{"a", "b", "c", "d", "e"}, 1)
+
+	moved := 0
+	for p := 0; p < partition.Count; p++ {
+		b1, _ := before.BackupOf(p)
+		b2, _ := after.BackupOf(p)
+		if b1 != b2 {
+			moved++
+		}
+	}
+	if moved > partition.Count/2 {
+		t.Fatalf("join moved %d/%d first-backups; expected a minority (~2·Count/5)", moved, partition.Count)
+	}
+}
+
 // TestTableMinimalMovementOnLeave is the symmetric property: when a member
 // leaves, only the partitions it owned move to new owners.
 func TestTableMinimalMovementOnLeave(t *testing.T) {
