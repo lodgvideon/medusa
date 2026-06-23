@@ -178,6 +178,25 @@ func TestMapSizeEndpoint(t *testing.T) {
 	}
 }
 
+func TestMapClearEndpoint(t *testing.T) {
+	srv := newTestServer(t)
+	base := srv.URL + "/v1/maps/c"
+	for _, k := range []string{"a", "b", "c"} {
+		if r := do(t, http.MethodPut, base+"/"+k, "v"); r.StatusCode != http.StatusNoContent {
+			t.Fatalf("PUT %s = %d", k, r.StatusCode)
+		}
+	}
+	if r := do(t, http.MethodDelete, base, ""); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE map = %d, want 204", r.StatusCode)
+	}
+	resp := do(t, http.MethodGet, base, "")
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(got) != "0" {
+		t.Fatalf("size after clear = %q, want \"0\"", got)
+	}
+}
+
 func TestStats(t *testing.T) {
 	srv := newTestServer(t)
 	// Store one entry, then check it shows up in the stats.

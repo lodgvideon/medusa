@@ -26,6 +26,8 @@ enum MessageType {
   MESSAGE_TYPE_DIGEST_RESPONSE = 16;
   MESSAGE_TYPE_SIZE_REQUEST = 17;
   MESSAGE_TYPE_SIZE_RESPONSE = 18;
+  MESSAGE_TYPE_CLEAR_REQUEST = 19;
+  MESSAGE_TYPE_CLEAR_RESPONSE = 20;
 }
 
 // Error is returned in place of a response payload when an RPC fails.

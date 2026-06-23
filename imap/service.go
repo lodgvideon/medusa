@@ -452,6 +452,49 @@ func (s *Service) localMapSize(name string) int {
 	return s.store.countMap(name, func(p int) bool { return tbl.OwnerOf(p) == s.self })
 }
 
+// localClearMap removes all entries this node holds for the named map (owner and
+// backup copies) and records each removal in the WAL so a crash before the next
+// checkpoint cannot replay them. It returns the number removed.
+func (s *Service) localClearMap(name string) int {
+	removed := s.store.clearMap(name)
+	if s.wal != nil {
+		for _, e := range removed {
+			if err := s.wal.appendRemove(e.mapName, []byte(e.key)); err != nil {
+				break // best-effort; the periodic checkpoint is the backstop
+			}
+		}
+	}
+	return len(removed)
+}
+
+// sendClear tells a peer to clear all its entries for the named map.
+func (s *Service) sendClear(ctx context.Context, addr, name string) (uint64, error) {
+	reqBuf := codec.GetBuf()
+	dstBuf := codec.GetBuf()
+	defer codec.PutBuf(reqBuf)
+	defer codec.PutBuf(dstBuf)
+
+	rb, err := codec.Marshal((*reqBuf)[:0], &medusav1.ClearRequest{Map: name})
+	if err != nil {
+		return 0, err
+	}
+	*reqBuf = rb
+
+	respType, resp, err := s.tr.Send(ctx, addr, medusav1.MessageType_MESSAGE_TYPE_CLEAR_REQUEST, rb, (*dstBuf)[:0])
+	*dstBuf = resp
+	if err != nil {
+		return 0, err
+	}
+	if respType != medusav1.MessageType_MESSAGE_TYPE_CLEAR_RESPONSE {
+		return 0, fmt.Errorf("imap: unexpected clear response type %v", respType)
+	}
+	var cr medusav1.ClearResponse
+	if err := cr.UnmarshalVT(resp); err != nil {
+		return 0, err
+	}
+	return cr.Removed, nil
+}
+
 // sendSize asks a peer for the count of entries it owns for the named map.
 func (s *Service) sendSize(ctx context.Context, addr, name string) (uint64, error) {
 	reqBuf := codec.GetBuf()
@@ -649,6 +692,14 @@ func (s *Service) Handle(reqType medusav1.MessageType, req, respBuf []byte) (med
 		}
 		out, err := codec.Marshal(respBuf, &medusav1.SizeResponse{Count: uint64(s.localMapSize(sr.Map))})
 		return medusav1.MessageType_MESSAGE_TYPE_SIZE_RESPONSE, out, err
+
+	case medusav1.MessageType_MESSAGE_TYPE_CLEAR_REQUEST:
+		var cr medusav1.ClearRequest
+		if err := cr.UnmarshalVT(req); err != nil {
+			return 0, respBuf, err
+		}
+		out, err := codec.Marshal(respBuf, &medusav1.ClearResponse{Removed: uint64(s.localClearMap(cr.Map))})
+		return medusav1.MessageType_MESSAGE_TYPE_CLEAR_RESPONSE, out, err
 
 	default:
 		return 0, respBuf, fmt.Errorf("imap: unhandled message type %v", reqType)

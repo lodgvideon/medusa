@@ -319,6 +319,26 @@ func (mp *Map) Size(ctx context.Context) (uint64, error) {
 	return total, firstErr
 }
 
+// Clear removes every entry in the map across the whole cluster. It is a
+// broadcast: each member drops all the copies it holds for the map (owner and
+// backup), so a healthy cluster ends fully empty. If a member is unreachable its
+// entries are not cleared and the error is non-nil — the clear is then partial,
+// and (as with any delete in this AP design) a leftover copy could briefly be
+// read via backup fallback until anti-entropy and a re-clear reconcile it.
+func (mp *Map) Clear(ctx context.Context) error {
+	var firstErr error
+	for _, m := range mp.svc.mem.Members() {
+		if m.ID == mp.svc.self {
+			mp.svc.localClearMap(mp.name)
+			continue
+		}
+		if _, err := mp.svc.sendClear(ctx, m.Addr, mp.name); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 // Remove deletes key, returning whether it existed.
 func (mp *Map) Remove(ctx context.Context, key []byte) (bool, error) {
 	metrics.RemoveOps.Add(1)

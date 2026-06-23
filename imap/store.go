@@ -312,6 +312,27 @@ func (s *store) countMap(name string, owned func(p int) bool) int {
 	return n
 }
 
+// clearMap removes every entry for the named map across all shards — owner and
+// backup copies alike — and returns the removed entries so the caller can record
+// the deletions durably (the WAL). A broadcast of clearMap to all members empties
+// the map cluster-wide. Already-expired entries are included (the whole map is
+// going away); recording their removal is harmless and idempotent on replay.
+func (s *store) clearMap(name string) []entry {
+	var removed []entry
+	for p := range s.shards {
+		sh := &s.shards[p]
+		sh.mu.Lock()
+		if inner := sh.m[name]; len(inner) > 0 {
+			for k, v := range inner {
+				removed = append(removed, entry{mapName: name, key: k, value: v.data, expireAt: v.expireAt})
+			}
+			delete(sh.m, name)
+		}
+		sh.mu.Unlock()
+	}
+	return removed
+}
+
 // update applies fn to the current value of key atomically, under the shard
 // lock, so concurrent updates to the same key are serialized. fn receives the
 // live value (nil if absent/expired) and returns the new value plus an action.

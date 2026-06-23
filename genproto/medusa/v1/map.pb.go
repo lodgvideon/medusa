@@ -773,6 +773,97 @@ func (x *SizeResponse) GetCount() uint64 {
 	return 0
 }
 
+// ClearRequest tells a peer to remove every entry it holds for a named map (all
+// local copies, owner and backup alike), so a broadcast to all members empties
+// the map cluster-wide.
+type ClearRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Map           string                 `protobuf:"bytes,1,opt,name=map,proto3" json:"map,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClearRequest) Reset() {
+	*x = ClearRequest{}
+	mi := &file_medusa_v1_map_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClearRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClearRequest) ProtoMessage() {}
+
+func (x *ClearRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_medusa_v1_map_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClearRequest.ProtoReflect.Descriptor instead.
+func (*ClearRequest) Descriptor() ([]byte, []int) {
+	return file_medusa_v1_map_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ClearRequest) GetMap() string {
+	if x != nil {
+		return x.Map
+	}
+	return ""
+}
+
+type ClearResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Removed       uint64                 `protobuf:"varint,1,opt,name=removed,proto3" json:"removed,omitempty"` // entries removed on the responding member
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClearResponse) Reset() {
+	*x = ClearResponse{}
+	mi := &file_medusa_v1_map_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClearResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClearResponse) ProtoMessage() {}
+
+func (x *ClearResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_medusa_v1_map_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClearResponse.ProtoReflect.Descriptor instead.
+func (*ClearResponse) Descriptor() ([]byte, []int) {
+	return file_medusa_v1_map_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ClearResponse) GetRemoved() uint64 {
+	if x != nil {
+		return x.Removed
+	}
+	return 0
+}
+
 var File_medusa_v1_map_proto protoreflect.FileDescriptor
 
 const file_medusa_v1_map_proto_rawDesc = "" +
@@ -822,7 +913,11 @@ const file_medusa_v1_map_proto_rawDesc = "" +
 	"\vSizeRequest\x12\x10\n" +
 	"\x03map\x18\x01 \x01(\tR\x03map\"$\n" +
 	"\fSizeResponse\x12\x14\n" +
-	"\x05count\x18\x01 \x01(\x04R\x05countB\x98\x01\n" +
+	"\x05count\x18\x01 \x01(\x04R\x05count\" \n" +
+	"\fClearRequest\x12\x10\n" +
+	"\x03map\x18\x01 \x01(\tR\x03map\")\n" +
+	"\rClearResponse\x12\x18\n" +
+	"\aremoved\x18\x01 \x01(\x04R\aremovedB\x98\x01\n" +
 	"\rcom.medusa.v1B\bMapProtoP\x01Z8github.com/lodgvideon/medusa/genproto/medusa/v1;medusav1\xa2\x02\x03MXX\xaa\x02\tMedusa.V1\xca\x02\tMedusa\\V1\xe2\x02\x15Medusa\\V1\\GPBMetadata\xea\x02\n" +
 	"Medusa::V1b\x06proto3"
 
@@ -838,7 +933,7 @@ func file_medusa_v1_map_proto_rawDescGZIP() []byte {
 	return file_medusa_v1_map_proto_rawDescData
 }
 
-var file_medusa_v1_map_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_medusa_v1_map_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_medusa_v1_map_proto_goTypes = []any{
 	(*PutRequest)(nil),      // 0: medusa.v1.PutRequest
 	(*PutResponse)(nil),     // 1: medusa.v1.PutResponse
@@ -854,6 +949,8 @@ var file_medusa_v1_map_proto_goTypes = []any{
 	(*DigestResponse)(nil),  // 11: medusa.v1.DigestResponse
 	(*SizeRequest)(nil),     // 12: medusa.v1.SizeRequest
 	(*SizeResponse)(nil),    // 13: medusa.v1.SizeResponse
+	(*ClearRequest)(nil),    // 14: medusa.v1.ClearRequest
+	(*ClearResponse)(nil),   // 15: medusa.v1.ClearResponse
 }
 var file_medusa_v1_map_proto_depIdxs = []int32{
 	8, // 0: medusa.v1.Snapshot.entries:type_name -> medusa.v1.SnapshotEntry
@@ -875,7 +972,7 @@ func file_medusa_v1_map_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_medusa_v1_map_proto_rawDesc), len(file_medusa_v1_map_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   14,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

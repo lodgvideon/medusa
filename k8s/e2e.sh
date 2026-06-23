@@ -174,6 +174,19 @@ else
   bad "Map.Size -> $out (want 6)"
 fi
 
+# ---- test: cluster-wide Map.Clear ----
+# Clear the map via one pod (DELETE on the map root); the size from another pod
+# must then be 0 — every member dropped its copies (owner and backup).
+echo "=== test: Map.Clear (cluster-wide) ==="
+out=$(incluster '
+  curl -s -o /dev/null -X DELETE medusa-2.medusa:8080/v1/maps/sized
+  curl -s medusa-0.medusa:8080/v1/maps/sized')
+if [ "$out" = "0" ]; then
+  ok "Map.Clear emptied the map cluster-wide (size 0 from another pod)"
+else
+  bad "Map.Clear -> $out (want 0)"
+fi
+
 # ---- test: fenced lock (acquire / contend) ----
 # Acquiring returns an 8-byte fence token; a contending holder on another pod
 # gets an empty body (lock held). Assert byte counts, which are printable.

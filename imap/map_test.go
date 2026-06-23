@@ -217,6 +217,39 @@ func TestMapSizeDistributed(t *testing.T) {
 	}
 }
 
+// TestMapClearDistributed proves Clear empties the map cluster-wide: Size drops
+// to 0 from every node, and a read does not resurrect a cleared key via backup
+// fallback — confirming backup copies are cleared too, not just owners.
+func TestMapClearDistributed(t *testing.T) {
+	f := newFixture()
+	a, b, c := f.cluster3(t)
+	ctx := context.Background()
+
+	for i := 0; i < 20; i++ {
+		if err := a.svc.Map("clearme").Put(ctx, []byte{byte(i)}, []byte("v")); err != nil {
+			t.Fatalf("put %d: %v", i, err)
+		}
+	}
+	if n, _ := a.svc.Map("clearme").Size(ctx); n != 20 {
+		t.Fatalf("size before clear = %d, want 20", n)
+	}
+
+	if err := b.svc.Map("clearme").Clear(ctx); err != nil { // clear via a different node
+		t.Fatalf("clear: %v", err)
+	}
+
+	for _, n := range []*node{a, b, c} {
+		if got, _ := n.svc.Map("clearme").Size(ctx); got != 0 {
+			t.Fatalf("size after clear from %s = %d, want 0", n.id, got)
+		}
+	}
+	// Owner returns absent and the backup-fallback finds nothing either — proof
+	// the backup copy was cleared, not just the owner's.
+	if v, ok, _ := c.svc.Map("clearme").Get(ctx, []byte{5}); ok {
+		t.Fatalf("cleared key resurrected via backup fallback: %q", v)
+	}
+}
+
 func TestPutGetAcrossNodes(t *testing.T) {
 	f := newFixture()
 	a, b, c := f.cluster3(t)

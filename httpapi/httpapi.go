@@ -48,6 +48,8 @@ func WithToken(token string) Option {
 //	GET    /v1/maps/{map}/{key}      fetch a value (404 if absent)
 //	PUT    /v1/maps/{map}/{key}      store the request body as the value
 //	DELETE /v1/maps/{map}/{key}      remove a key (404 if absent)
+//	DELETE /v1/maps/{map}            clear the whole map cluster-wide (502 if a
+//	                                 member is unreachable — clear is then partial)
 //
 // Pass WithToken to require bearer-token auth on every route but the probes.
 func New(node *medusa.Node, opts ...Option) http.Handler {
@@ -170,6 +172,15 @@ func New(node *medusa.Node, opts ...Option) http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/octet-stream")
 		_, _ = w.Write(out)
+	})
+
+	mux.HandleFunc("DELETE /v1/maps/{map}", func(w http.ResponseWriter, r *http.Request) {
+		if err := node.Map(r.PathValue("map")).Clear(r.Context()); err != nil {
+			// A member was unreachable, so the map may not be fully cleared.
+			writeText(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	mux.HandleFunc("DELETE /v1/maps/{map}/{key}", func(w http.ResponseWriter, r *http.Request) {

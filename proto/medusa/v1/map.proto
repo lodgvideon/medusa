@@ -88,3 +88,14 @@ message SizeRequest {
 message SizeResponse {
   uint64 count = 1;
 }
+
+// ClearRequest tells a peer to remove every entry it holds for a named map (all
+// local copies, owner and backup alike), so a broadcast to all members empties
+// the map cluster-wide.
+message ClearRequest {
+  string map = 1;
+}
+
+message ClearResponse {
+  uint64 removed = 1; // entries removed on the responding member
+}
