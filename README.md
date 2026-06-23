@@ -37,7 +37,11 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   absent (returns whether it won — a distributed-lock / leader-election building
   block), and `Map.CompareAndSwap(key, expected, new)` sets only if the current
   value matches (optimistic concurrency / compare-and-set). Both are exposed as
-  the `putifabsent` and `cas` processors too.
+  the `putifabsent` and `cas` processors too. Like all `Execute` ops they are
+  at-least-once under owner failover (a lost response + retry can report a false
+  negative for a write that actually applied), so for strict locking use a
+  caller-unique value and read it back to confirm ownership — see the doc
+  comments and the fencing-token roadmap item.
 - **Replication (configurable factor)** — every write is synchronously copied to
   `Backups` distinct backup owners (default 1; env `MEDUSA_BACKUPS`). A cluster
   tolerates that many simultaneous holder failures with no data loss: when the
@@ -327,12 +331,14 @@ bash k8s/e2e.sh            # or: go test -tags k8s -run TestK8sE2E -timeout 15m 
 
 ### Roadmap
 
-- Group-commit for the write-ahead log: it currently fsyncs on every write
-  (durability over throughput), so batching concurrent writes into one fsync
-  would raise write throughput without weakening the guarantee.
 - Replace-semantics reconciliation: extend the digest-gated anti-entropy so that
   on a mismatch the backup also *removes* keys the owner no longer holds (missed
   deletes), not just receives missing/stale values — the push-only residual.
+  Doing it safely needs a per-entry version so a freshly-replicated write is not
+  pruned by a slightly-stale reconcile manifest.
+- Fencing tokens for the lock primitives: a monotonic token returned by
+  `PutIfAbsent` so a holder can prove ownership to downstream services and the
+  at-least-once failover ambiguity becomes detectable rather than silent.
 - Intern map names (or use integer map handles) to make the remote read path
   fully zero-alloc.
 - Phi-accrual failure detection with a background heartbeat loop.

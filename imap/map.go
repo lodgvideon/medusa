@@ -204,6 +204,13 @@ func (mp *Map) Execute(ctx context.Context, key []byte, processor string, arg []
 // (atomic read-modify-write under the shard lock) and the result is replicated,
 // so it is a correct distributed primitive for locks and leader election: a
 // caller that gets true holds the key.
+//
+// Like every Execute op it is at-least-once under owner failover: if the owner
+// applies and replicates the write but the response is lost, the retry runs on a
+// backup that now holds the key and returns false — a false negative (you won but
+// were told you lost). For strict mutual exclusion, store a value unique to the
+// caller and, on a false/errored result, Get the key: if it equals your value you
+// hold the lock. (Fencing tokens are the textbook hardening — see the roadmap.)
 func (mp *Map) PutIfAbsent(ctx context.Context, key, value []byte) (bool, error) {
 	out, err := mp.Execute(ctx, key, "putifabsent", value)
 	if err != nil {
@@ -216,6 +223,12 @@ func (mp *Map) PutIfAbsent(ctx context.Context, key, value []byte) (bool, error)
 // a value equal to expected, returning whether the swap happened. It is the
 // optimistic-concurrency primitive (compare-and-set). To create an absent key,
 // use PutIfAbsent.
+//
+// Re-applying the same swap is a no-op (once the value is newVal it no longer
+// equals expected), so retries never double-apply; but like PutIfAbsent the
+// reported result is at-least-once — a lost response then a backup retry can
+// return false for a swap that did happen. Read the value back if the outcome
+// must be known exactly.
 func (mp *Map) CompareAndSwap(ctx context.Context, key, expected, newVal []byte) (bool, error) {
 	out, err := mp.Execute(ctx, key, "cas", encodeCAS(expected, newVal))
 	if err != nil {
