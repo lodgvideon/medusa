@@ -2,8 +2,8 @@
 #
 # End-to-end Kubernetes test for medusa. Deploys a 3-node cluster, verifies
 # clustering, the configured replication factor, the cross-pod distributed map,
-# scale-out partition migration, and zero-data-loss rolling restart, then tears
-# everything down.
+# scale-out partition migration, zero-data-loss rolling restart, and write-ahead
+# log recovery after an ungraceful crash, then tears everything down.
 #
 # Skips (exit 0) when no Kubernetes cluster or Docker is reachable, so it is
 # safe to invoke unconditionally. Run from anywhere:
@@ -171,6 +171,24 @@ if echo "$out" | grep -q "miss=0"; then
   ok "all 30 keys survived a whole-cluster restart (reloaded from disk)"
 else
   bad "persistence -> $out"
+fi
+
+# ---- test: write-ahead log survives an ungraceful crash ----
+echo "=== test: WAL crash durability ==="
+# Write a fresh key, then SIGKILL every pod (--grace-period=0 --force) so no
+# graceful snapshot is taken. The key, younger than the snapshot interval, lives
+# only in the fsync'd WAL; replaying it on restart must recover the write.
+out=$(incluster '
+  curl -s -o /dev/null -X PUT --data-binary walval medusa-0.medusa:8080/v1/maps/g/walkey
+  echo done')
+kubectl delete pods -l app=medusa --grace-period=0 --force >/dev/null 2>&1
+kubectl rollout status statefulset/medusa --timeout=150s >/dev/null
+sleep 16
+out=$(incluster 'curl -s -o /dev/null -w "%{http_code} " medusa-1.medusa:8080/v1/maps/g/walkey; curl -s medusa-1.medusa:8080/v1/maps/g/walkey')
+if echo "$out" | grep -q "walval"; then
+  ok "key written just before a SIGKILL crash was recovered from the WAL"
+else
+  bad "WAL crash durability -> $out"
 fi
 
 echo "=== e2e summary: $PASS passed, $FAIL failed ==="

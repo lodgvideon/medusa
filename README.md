@@ -12,7 +12,7 @@ allocation assertions baked into the test suite.
 ```
 metric                                       value
 ───────────────────────────────────────     ──────────────────────────────
-coverage (hand-written packages)             91.0%   0 allocs/op on hot paths
+coverage (hand-written packages)             90.9%   0 allocs/op on hot paths
 BenchmarkMarshal      (encode, warm buffer)   7.1 ns/op   0 allocs/op
 BenchmarkMapGetLocal  (local owned read)     27.8 ns/op   0 allocs/op
 ```
@@ -57,10 +57,13 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   TLS** — set `Config.TLS` (or `MEDUSA_TLS_CERT` / `MEDUSA_TLS_KEY` /
   `MEDUSA_TLS_CA`) and node-to-node RPC upgrades from cleartext h2c to HTTP/2
   over TLS, with peers verified in both directions.
-- **Persistence** — with `Config.DataDir` (env `MEDUSA_DATA_DIR`, a PVC in k8s)
-  each node snapshots its store to disk periodically and on shutdown, and reloads
-  it on start, so the cluster survives a *whole-cluster* restart (not just
-  rolling). Verified in k8s: delete all pods, data reloads from each PVC.
+- **Persistence (snapshot + write-ahead log)** — with `Config.DataDir` (env
+  `MEDUSA_DATA_DIR`, a PVC in k8s) each node snapshots its store to disk
+  periodically and on shutdown, *and* appends every mutation to an fsync'd
+  write-ahead log before acknowledging it. On start it reloads the snapshot and
+  replays the WAL on top, so even an *ungraceful* whole-cluster crash loses no
+  acknowledged write; a checkpoint truncates the WAL after each snapshot to
+  bound replay. Verified in k8s: delete all pods, data reloads from each PVC.
 - **Cluster membership** — nodes join via seeds, gossip their views to
   converge, and a heartbeat detector evicts a peer after several missed beats
   (tombstoned so gossip can't resurrect it; an explicit rejoin clears it). No
@@ -284,8 +287,6 @@ bash k8s/e2e.sh            # or: go test -tags k8s -run TestK8sE2E -timeout 15m 
 
 ### Roadmap
 
-- Write-ahead log so an ungraceful whole-cluster crash loses no acknowledged
-  write (today persistence is a periodic + on-shutdown snapshot).
 - Rendezvous (HRW) partitioning to minimize data movement on membership change.
 - Read-repair / anti-entropy to re-sync replicas that diverged during a failure.
 - Intern map names (or use integer map handles) to make the remote read path

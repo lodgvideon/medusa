@@ -42,6 +42,10 @@ const snapshotInterval = 30 * time.Second
 
 const snapshotFile = "snapshot.pb"
 
+// walFile is the write-ahead log, replayed on top of the snapshot at startup and
+// truncated at each snapshot checkpoint.
+const walFile = "wal.log"
+
 // Node is a single member of a Medusa cluster.
 type Node struct {
 	mem     *cluster.Membership
@@ -144,9 +148,14 @@ func New(cfg Config) (*Node, error) {
 	if n.dataDir != "" {
 		if err := n.loadSnapshot(); err != nil {
 			n.log.Warn("snapshot load failed", "err", err)
-		} else {
-			n.log.Info("snapshot loaded", "entries", n.maps.LocalEntryCount())
 		}
+		// Replay the write-ahead log on top of the snapshot and open it for
+		// appending, so writes since the last snapshot survive an ungraceful
+		// crash and subsequent writes are logged durably.
+		if err := n.maps.OpenWAL(n.walPath()); err != nil {
+			n.log.Warn("WAL open/replay failed", "err", err)
+		}
+		n.log.Info("persistence ready", "entries", n.maps.LocalEntryCount())
 		n.lastSaveNano = time.Now().UnixNano()
 	}
 
@@ -222,6 +231,7 @@ func (n *Node) maintain(ctx context.Context, interval time.Duration) {
 }
 
 func (n *Node) snapshotPath() string { return filepath.Join(n.dataDir, snapshotFile) }
+func (n *Node) walPath() string      { return filepath.Join(n.dataDir, walFile) }
 
 // loadSnapshot restores this node's persisted state, if a snapshot exists.
 func (n *Node) loadSnapshot() error {
@@ -240,12 +250,21 @@ func (n *Node) loadSnapshot() error {
 	return nil
 }
 
-// saveSnapshot writes this node's state to disk atomically (temp file + rename).
+// saveSnapshot checkpoints this node's state: it writes a fresh snapshot to disk
+// atomically (temp file + rename) and then truncates the write-ahead log, so the
+// log only ever holds writes since the last snapshot. The two steps are
+// serialized against concurrent writes by the Service so no logged write is
+// dropped before the snapshot reflects it.
 func (n *Node) saveSnapshot() error {
+	return n.maps.Checkpoint(n.writeSnapshotFile)
+}
+
+// writeSnapshotFile persists snap to the data directory atomically.
+func (n *Node) writeSnapshotFile(snap *medusav1.Snapshot) error {
 	if err := os.MkdirAll(n.dataDir, 0o755); err != nil {
 		return err
 	}
-	data, err := n.maps.Snapshot().MarshalVT()
+	data, err := snap.MarshalVT()
 	if err != nil {
 		return err
 	}
@@ -328,6 +347,9 @@ func (n *Node) Close() error {
 		if n.dataDir != "" {
 			if err := n.saveSnapshot(); err != nil {
 				n.log.Warn("final snapshot save failed", "err", err)
+			}
+			if err := n.maps.CloseWAL(); err != nil {
+				n.log.Warn("WAL close failed", "err", err)
 			}
 		}
 	})

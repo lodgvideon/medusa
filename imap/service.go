@@ -23,6 +23,7 @@ type Service struct {
 	mem   *cluster.Membership
 	tr    transport.Transport
 	store *store
+	wal   *wal // nil when durability logging is disabled (no DataDir)
 }
 
 // NewService creates a map service bound to a membership and transport.
@@ -35,14 +36,22 @@ func (s *Service) Map(name string) *Map { return &Map{svc: s, name: name} }
 
 // applyPut writes locally as the partition owner and, unless this is itself a
 // backup write, replicates to the partition's backup. It returns whether the
-// key was newly created.
-func (s *Service) applyPut(ctx context.Context, name string, key, value []byte, ttlMs int64, isBackup bool) bool {
+// key was newly created. The mutation is recorded in the write-ahead log (and
+// fsynced) before returning, so an acknowledged write survives an ungraceful
+// crash; a WAL error is surfaced rather than silently dropped.
+func (s *Service) applyPut(ctx context.Context, name string, key, value []byte, ttlMs int64, isBackup bool) (bool, error) {
 	p := partition.For(key)
-	created := s.store.put(p, name, key, value, expireFromTTL(ttlMs))
+	expireAt := expireFromTTL(ttlMs)
+	created := s.store.put(p, name, key, value, expireAt)
+	if s.wal != nil {
+		if err := s.wal.appendPut(name, key, value, expireAt); err != nil {
+			return created, err
+		}
+	}
 	if !isBackup {
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_PUT_REQUEST, name, key, value, ttlMs)
 	}
-	return created
+	return created, nil
 }
 
 // expireFromTTL turns a relative TTL in milliseconds into an absolute expiry
@@ -55,13 +64,19 @@ func expireFromTTL(ttlMs int64) int64 {
 }
 
 // applyRemove deletes locally and, unless a backup write, replicates the delete.
-func (s *Service) applyRemove(ctx context.Context, name string, key []byte, isBackup bool) bool {
+// Like applyPut it records the deletion in the WAL before returning.
+func (s *Service) applyRemove(ctx context.Context, name string, key []byte, isBackup bool) (bool, error) {
 	p := partition.For(key)
 	existed := s.store.remove(p, name, key)
+	if s.wal != nil {
+		if err := s.wal.appendRemove(name, key); err != nil {
+			return existed, err
+		}
+	}
 	if !isBackup {
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_REMOVE_REQUEST, name, key, nil, 0)
 	}
-	return existed
+	return existed, nil
 }
 
 // replicate forwards a write to every backup member of the partition,
@@ -182,8 +197,18 @@ func (s *Service) applyExecute(ctx context.Context, name string, key []byte, pro
 	})
 	switch action {
 	case Set:
+		if s.wal != nil {
+			if err := s.wal.appendPut(name, key, newVal, expireAt); err != nil {
+				return out, err
+			}
+		}
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_PUT_REQUEST, name, key, newVal, remainingTTLms(expireAt, nowNano()))
 	case Delete:
+		if s.wal != nil {
+			if err := s.wal.appendRemove(name, key); err != nil {
+				return out, err
+			}
+		}
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_REMOVE_REQUEST, name, key, nil, 0)
 	}
 	return out, nil
@@ -318,6 +343,60 @@ func (s *Service) Restore(snap *medusav1.Snapshot) {
 	s.store.loadAll(entries)
 }
 
+// OpenWAL replays any existing write-ahead log at path into the store (on top
+// of an already-restored snapshot), then opens it for appending so subsequent
+// writes are logged. Call it after Restore. Replayed puts that have already
+// expired are skipped.
+func (s *Service) OpenWAL(path string) error {
+	now := nowNano()
+	err := replayWAL(path,
+		func(name string, key, value []byte, expireAt int64) {
+			if expireAt != 0 && expireAt <= now {
+				return // expired while we were down
+			}
+			s.store.put(partition.For(key), name, key, value, expireAt)
+		},
+		func(name string, key []byte) {
+			s.store.remove(partition.For(key), name, key)
+		},
+	)
+	if err != nil {
+		return err
+	}
+	w, err := openWAL(path)
+	if err != nil {
+		return err
+	}
+	s.wal = w
+	return nil
+}
+
+// CloseWAL closes the write-ahead log if one is open.
+func (s *Service) CloseWAL() error {
+	if s.wal == nil {
+		return nil
+	}
+	return s.wal.close()
+}
+
+// Checkpoint durably persists a snapshot and then truncates the write-ahead log,
+// bounding replay time. write is invoked with a freshly captured snapshot and
+// must persist it durably; only on its success is the WAL truncated. The whole
+// operation holds the WAL lock, so it cannot race a concurrent append: every
+// record being discarded is already reflected in the snapshot just written.
+// With no WAL it simply persists the snapshot.
+func (s *Service) Checkpoint(write func(*medusav1.Snapshot) error) error {
+	if s.wal == nil {
+		return write(s.Snapshot())
+	}
+	s.wal.mu.Lock()
+	defer s.wal.mu.Unlock()
+	if err := write(s.Snapshot()); err != nil {
+		return err
+	}
+	return s.wal.truncateLocked()
+}
+
 // SweepExpired reclaims expired entries, returning the count removed.
 func (s *Service) SweepExpired() int { return s.store.sweepExpired() }
 
@@ -331,7 +410,10 @@ func (s *Service) Handle(reqType medusav1.MessageType, req, respBuf []byte) (med
 		if err := pr.UnmarshalVT(req); err != nil {
 			return 0, respBuf, err
 		}
-		created := s.applyPut(context.Background(), pr.Map, pr.Key, pr.Value, pr.TtlMs, pr.Backup)
+		created, aerr := s.applyPut(context.Background(), pr.Map, pr.Key, pr.Value, pr.TtlMs, pr.Backup)
+		if aerr != nil {
+			return 0, respBuf, aerr
+		}
 		out, err := codec.Marshal(respBuf, &medusav1.PutResponse{Created: created})
 		return medusav1.MessageType_MESSAGE_TYPE_PUT_RESPONSE, out, err
 
@@ -349,7 +431,10 @@ func (s *Service) Handle(reqType medusav1.MessageType, req, respBuf []byte) (med
 		if err := rr.UnmarshalVT(req); err != nil {
 			return 0, respBuf, err
 		}
-		existed := s.applyRemove(context.Background(), rr.Map, rr.Key, rr.Backup)
+		existed, aerr := s.applyRemove(context.Background(), rr.Map, rr.Key, rr.Backup)
+		if aerr != nil {
+			return 0, respBuf, aerr
+		}
 		out, err := codec.Marshal(respBuf, &medusav1.RemoveResponse{Existed: existed})
 		return medusav1.MessageType_MESSAGE_TYPE_REMOVE_RESPONSE, out, err
 

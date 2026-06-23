@@ -52,21 +52,22 @@ func (mp *Map) PutTTL(ctx context.Context, key, value []byte, ttl time.Duration)
 
 func (mp *Map) putWithTTL(ctx context.Context, key, value []byte, ttlMs int64) error {
 	metrics.PutOps.Add(1)
-	p, owner, backup, ownerLocal, backupLocal, hasBackup := mp.route(key)
+	_, owner, backup, ownerLocal, backupLocal, hasBackup := mp.route(key)
 
 	if ownerLocal {
-		mp.svc.applyPut(ctx, mp.name, key, value, ttlMs, false)
-		return nil
+		_, err := mp.svc.applyPut(ctx, mp.name, key, value, ttlMs, false)
+		return err
 	}
 
 	err := mp.svc.sendPut(ctx, owner, mp.name, key, value, ttlMs, false)
 	if err == nil {
 		return nil
 	}
-	// Owner unreachable: fall back to the backup so the write still lands.
+	// Owner unreachable: fall back to the backup so the write still lands. Route
+	// through applyPut (as a backup write) so it is logged to the WAL too.
 	if backupLocal {
-		mp.svc.store.put(p, mp.name, key, value, expireFromTTL(ttlMs))
-		return nil
+		_, berr := mp.svc.applyPut(ctx, mp.name, key, value, ttlMs, true)
+		return berr
 	}
 	if hasBackup {
 		return mp.svc.sendPut(ctx, backup, mp.name, key, value, ttlMs, true)
@@ -133,10 +134,10 @@ func (mp *Map) Execute(ctx context.Context, key []byte, processor string, arg []
 // Remove deletes key, returning whether it existed.
 func (mp *Map) Remove(ctx context.Context, key []byte) (bool, error) {
 	metrics.RemoveOps.Add(1)
-	p, owner, backup, ownerLocal, backupLocal, hasBackup := mp.route(key)
+	_, owner, backup, ownerLocal, backupLocal, hasBackup := mp.route(key)
 
 	if ownerLocal {
-		return mp.svc.applyRemove(ctx, mp.name, key, false), nil
+		return mp.svc.applyRemove(ctx, mp.name, key, false)
 	}
 
 	existed, err := mp.svc.sendRemove(ctx, owner, mp.name, key, false)
@@ -144,7 +145,7 @@ func (mp *Map) Remove(ctx context.Context, key []byte) (bool, error) {
 		return existed, nil
 	}
 	if backupLocal {
-		return mp.svc.store.remove(p, mp.name, key), nil
+		return mp.svc.applyRemove(ctx, mp.name, key, true)
 	}
 	if hasBackup {
 		return mp.svc.sendRemove(ctx, backup, mp.name, key, true)

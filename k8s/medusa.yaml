@@ -74,7 +74,8 @@ spec:
             # at the cost of more write traffic and memory.
             - name: MEDUSA_BACKUPS
               value: "1"
-            # Persist snapshots so the cluster survives a whole-cluster restart.
+            # Enable persistence: periodic snapshots plus a fsync'd write-ahead
+            # log, so even an ungraceful whole-cluster crash loses no write.
             - name: MEDUSA_DATA_DIR
               value: /data
             # Optional: require a bearer token on the admin API (the /healthz and
