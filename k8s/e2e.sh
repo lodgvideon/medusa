@@ -108,6 +108,18 @@ else
   bad "metrics endpoint -> $out"
 fi
 
+# ---- test: anti-entropy metric present ----
+# Active anti-entropy is cluster-visible behavior; assert its counter is exported
+# (named explicitly so dropping it from WriteProm fails the suite, not just a
+# generic series count).
+echo "=== test: anti-entropy metric ==="
+out=$(incluster 'curl -s medusa-0.medusa:8080/metrics | grep -c "^medusa_entries_reconciled_total "')
+if [ "${out:-0}" -ge 1 ] 2>/dev/null; then
+  ok "medusa_entries_reconciled_total exported"
+else
+  bad "anti-entropy metric missing -> $out"
+fi
+
 # ---- test: TTL expiry ----
 echo "=== test: TTL expiry ==="
 out=$(incluster '

@@ -207,6 +207,25 @@ func TestSyncBackupsOnlyOwnerPushes(t *testing.T) {
 	}
 }
 
+// TestLookupReflectsRemoval covers the building block of the anti-entropy
+// resurrection fix: lookup reports a removed key as absent, so SyncBackups's
+// re-read-before-push skips a key the owner deleted since the snapshot.
+func TestLookupReflectsRemoval(t *testing.T) {
+	st := newStore()
+	key := []byte("k")
+	p := partition.For(key)
+	st.put(p, "m", key, []byte("v"), 0)
+
+	data, exp, ok := st.lookup(p, "m", key)
+	if !ok || string(data) != "v" || exp != 0 {
+		t.Fatalf("lookup after put = %q,%d,%v; want \"v\",0,true", data, exp, ok)
+	}
+	st.remove(p, "m", key)
+	if _, _, ok := st.lookup(p, "m", key); ok {
+		t.Fatal("lookup must report a removed key as absent so anti-entropy won't resurrect it")
+	}
+}
+
 func TestHandleRejectsCorruptPayload(t *testing.T) {
 	svc := svcWith(&fakeTransport{})
 	bad := []byte{0xff, 0xff, 0xff} // not a valid protobuf message

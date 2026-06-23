@@ -64,6 +64,26 @@ func (s *store) get(p int, name string, key []byte) ([]byte, bool) {
 	return v.data, true
 }
 
+// lookup returns the current value and absolute expiry for key, treating an
+// expired entry as absent. Like get, the returned slice aliases internal storage
+// and must be treated as read-only. Anti-entropy re-reads an entry with this just
+// before re-pushing it, so a key the owner deleted (or changed) since the
+// snapshot is not resurrected or clobbered on a backup.
+func (s *store) lookup(p int, name string, key []byte) (data []byte, expireAt int64, ok bool) {
+	sh := &s.shards[p]
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+	inner := sh.m[name]
+	if inner == nil {
+		return nil, 0, false
+	}
+	v, ok := inner[string(key)]
+	if !ok || v.expired(nowNano()) {
+		return nil, 0, false
+	}
+	return v.data, v.expireAt, true
+}
+
 // put stores a copy of value under key with the given absolute expiry (0 =
 // never). It returns true when the key was newly created — overwriting an
 // already-expired entry counts as a create.

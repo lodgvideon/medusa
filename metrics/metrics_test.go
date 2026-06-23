@@ -12,6 +12,7 @@ func TestWriteProm(t *testing.T) {
 	metrics.PutOps.Store(7)
 	metrics.GetOps.Store(3)
 	metrics.Swept.Store(2)
+	metrics.Reconciled.Store(5)
 
 	var buf bytes.Buffer
 	metrics.WriteProm(&buf, metrics.Gauges{Members: 3, LocalEntries: 42})
@@ -27,6 +28,7 @@ func TestWriteProm(t *testing.T) {
 		"medusa_map_entries 42",
 		"medusa_migrations_total",
 		"medusa_members_evicted_total",
+		"medusa_entries_reconciled_total 5",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("metrics output missing %q\n---\n%s", want, out)

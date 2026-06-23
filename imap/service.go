@@ -326,29 +326,48 @@ func (s *Service) Migrate(ctx context.Context, table *partition.Table) {
 // backup kept after missing a delete (digest-based full reconciliation that also
 // reconciles tombstones is the roadmap). Only owned partitions are pushed, so the
 // owner stays the single source of truth.
+//
+// Each entry is re-read from the owner's store (lookup) immediately before it is
+// pushed, and skipped if the owner no longer holds it — so a key deleted since
+// the snapshot is not resurrected on a backup. This leaves only the same narrow
+// re-read→send race Migrate has, instead of the whole snapshot→push window.
 func (s *Service) SyncBackups(ctx context.Context, table *partition.Table, start, batch int) (pushed, next int) {
 	now := nowNano()
 	p := ((start % partition.Count) + partition.Count) % partition.Count
 	for k := 0; k < batch; k++ {
 		if table.OwnerOf(p) == s.self {
-			if entries := s.store.snapshotPartition(p); len(entries) > 0 {
-				for i, n := 0, table.NumBackups(p); i < n; i++ {
-					b, ok := table.BackupAt(p, i)
-					if !ok || b == s.self {
-						continue
-					}
-					addr, ok := s.mem.AddrOf(b)
+			// Collect this partition's live backup addresses once.
+			addrs := make([]string, 0, table.NumBackups(p))
+			for i, n := 0, table.NumBackups(p); i < n; i++ {
+				b, ok := table.BackupAt(p, i)
+				if !ok || b == s.self {
+					continue
+				}
+				if addr, ok := s.mem.AddrOf(b); ok {
+					addrs = append(addrs, addr)
+				}
+			}
+			if len(addrs) > 0 {
+				for _, e := range s.store.snapshotPartition(p) {
+					// Re-read the owner's CURRENT state: a key deleted or changed
+					// since the snapshot must not be resurrected/clobbered on a
+					// backup. Push the fresh value so backups converge to the owner.
+					data, expireAt, ok := s.store.lookup(p, e.mapName, []byte(e.key))
 					if !ok {
-						continue
+						continue // deleted/expired since the snapshot — don't resurrect
 					}
-					for _, e := range entries {
-						ttlMs := remainingTTLms(e.expireAt, now)
-						if e.expireAt != 0 && ttlMs <= 0 {
-							continue // expired in flight; let it lapse
+					ttlMs := remainingTTLms(expireAt, now)
+					if expireAt != 0 && ttlMs <= 0 {
+						continue // expired in flight; let it lapse
+					}
+					sent := false
+					for _, addr := range addrs {
+						if err := s.sendPut(ctx, addr, e.mapName, []byte(e.key), data, ttlMs, true); err == nil {
+							sent = true
 						}
-						if err := s.sendPut(ctx, addr, e.mapName, []byte(e.key), e.value, ttlMs, true); err == nil {
-							pushed++
-						}
+					}
+					if sent {
+						pushed++ // count the entry once, not once per backup
 					}
 				}
 			}
