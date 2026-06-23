@@ -142,12 +142,12 @@ func splitCAS(arg []byte) (expected, newVal []byte, ok bool) {
 // — the standard fix for the at-least-once ambiguity of plain putIfAbsent.
 //
 // This is a single-owner lock, not a consensus lock. The fence is strictly
-// monotonic while the owner is live and across a graceful handoff (the entry
-// migrates with its fence), but replication to backups is best-effort, so a
-// backup promoted after an ungraceful owner crash may have missed the last
-// acquire and reissue a token already in use. Crash-safe monotonic fencing needs
-// synchronous/consensus replication of the fence — out of scope here; see the
-// Map.Lock doc and the roadmap.
+// monotonic only while one owner serves the key uncontended — NOT across an
+// ungraceful owner crash (a promoted backup may have missed the last acquire,
+// best-effort replication) nor a partition migration (an acquire routed to the
+// old owner on a stale table during the handoff is not propagated to the new
+// owner). Strict fencing needs synchronous/consensus replication or a quiescent
+// handoff — out of scope here; see the Map.Lock doc and the roadmap.
 func encodeLock(fence uint64, holder []byte) []byte {
 	b := make([]byte, 8+len(holder))
 	binary.BigEndian.PutUint64(b, fence)

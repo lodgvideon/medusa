@@ -34,26 +34,46 @@ func NewService(mem *cluster.Membership, tr transport.Transport) *Service {
 // Map returns a handle to the named distributed map.
 func (s *Service) Map(name string) *Map { return &Map{svc: s, name: name} }
 
+// logged runs a store mutation and its WAL append as one unit. When a WAL is
+// enabled it holds w.mu across BOTH, so the store-apply order equals the WAL
+// order — two concurrent conflicting writes cannot land in the store in one
+// order yet the WAL in the other (which would make crash recovery replay a
+// different final state than was live). The lock order is w.mu → shard.mu, the
+// same nesting Checkpoint uses (w.mu then the snapshot's shard RLocks), so the
+// two cannot deadlock. record is the WAL append (via appendLocked); it is not
+// called when the WAL is disabled. mutate must perform the store change.
+//
+// Apply-before-log within the unit is deliberate: it lets Checkpoint capture the
+// snapshot and truncate the WAL under w.mu knowing every truncated record is
+// already reflected — truncation can never drop a write.
+func (s *Service) logged(mutate func(), record func() error) error {
+	if s.wal == nil {
+		mutate()
+		return nil
+	}
+	s.wal.mu.Lock()
+	defer s.wal.mu.Unlock()
+	mutate()
+	return record()
+}
+
 // applyPut writes locally as the partition owner and, unless this is itself a
 // backup write, replicates to the partition's backup. It returns whether the
-// key was newly created. The mutation is recorded in the write-ahead log (and
-// fsynced) before returning, so an acknowledged write survives an ungraceful
-// crash; a WAL error is surfaced rather than silently dropped.
-//
-// Ordering note: the store is mutated before the WAL append, not after. Both
-// finish before the operation is acknowledged, so durability of acknowledged
-// writes holds (a crash before the fsync returns means the caller was never
-// acked). Apply-before-log is deliberate: it lets Checkpoint capture the store
-// snapshot and truncate the WAL under one lock and know every truncated record
-// is already reflected in that snapshot — so truncation can never drop a write.
+// key was newly created. The store mutation and its WAL record are applied
+// atomically under the WAL lock (see logged), and fsynced before returning, so
+// an acknowledged write survives an ungraceful crash and replay reconstructs the
+// live order; a WAL error is surfaced rather than silently dropped.
 func (s *Service) applyPut(ctx context.Context, name string, key, value []byte, ttlMs int64, isBackup bool) (bool, error) {
 	p := partition.For(key)
 	expireAt := expireFromTTL(ttlMs)
-	created := s.store.put(p, name, key, value, expireAt)
-	if s.wal != nil {
-		if err := s.wal.appendPut(name, key, value, expireAt); err != nil {
-			return created, err
-		}
+	var created bool
+	if err := s.logged(
+		func() { created = s.store.put(p, name, key, value, expireAt) },
+		func() error {
+			return s.wal.appendLocked(walOpPut, &medusav1.SnapshotEntry{Map: name, Key: key, Value: value, ExpireAt: expireAt})
+		},
+	); err != nil {
+		return created, err
 	}
 	if !isBackup {
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_PUT_REQUEST, name, key, value, ttlMs)
@@ -74,11 +94,14 @@ func expireFromTTL(ttlMs int64) int64 {
 // Like applyPut it records the deletion in the WAL before returning.
 func (s *Service) applyRemove(ctx context.Context, name string, key []byte, isBackup bool) (bool, error) {
 	p := partition.For(key)
-	existed := s.store.remove(p, name, key)
-	if s.wal != nil {
-		if err := s.wal.appendRemove(name, key); err != nil {
-			return existed, err
-		}
+	var existed bool
+	if err := s.logged(
+		func() { existed = s.store.remove(p, name, key) },
+		func() error {
+			return s.wal.appendLocked(walOpRemove, &medusav1.SnapshotEntry{Map: name, Key: key})
+		},
+	); err != nil {
+		return existed, err
 	}
 	if !isBackup {
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_REMOVE_REQUEST, name, key, nil, 0)
@@ -228,25 +251,35 @@ func (s *Service) applyExecute(ctx context.Context, name string, key []byte, pro
 	}
 	p := partition.For(key)
 	var newVal, out []byte
-	action, expireAt := s.store.update(p, name, key, func(cur []byte, exists bool) ([]byte, Action) {
-		var a Action
-		newVal, a, out = proc(cur, exists, arg)
-		return newVal, a
-	})
+	var action Action
+	var expireAt int64
+	// The store update (which runs the processor under the shard lock) and the
+	// resulting WAL record are applied atomically under the WAL lock, so a
+	// concurrent conflicting write cannot interleave their store/WAL orders.
+	if err := s.logged(
+		func() {
+			action, expireAt = s.store.update(p, name, key, func(cur []byte, exists bool) ([]byte, Action) {
+				var a Action
+				newVal, a, out = proc(cur, exists, arg)
+				return newVal, a
+			})
+		},
+		func() error {
+			switch action {
+			case Set:
+				return s.wal.appendLocked(walOpPut, &medusav1.SnapshotEntry{Map: name, Key: key, Value: newVal, ExpireAt: expireAt})
+			case Delete:
+				return s.wal.appendLocked(walOpRemove, &medusav1.SnapshotEntry{Map: name, Key: key})
+			}
+			return nil
+		},
+	); err != nil {
+		return out, err
+	}
 	switch action {
 	case Set:
-		if s.wal != nil {
-			if err := s.wal.appendPut(name, key, newVal, expireAt); err != nil {
-				return out, err
-			}
-		}
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_PUT_REQUEST, name, key, newVal, remainingTTLms(expireAt, nowNano()))
 	case Delete:
-		if s.wal != nil {
-			if err := s.wal.appendRemove(name, key); err != nil {
-				return out, err
-			}
-		}
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_REMOVE_REQUEST, name, key, nil, 0)
 	}
 	return out, nil
@@ -459,13 +492,20 @@ func (s *Service) localMapSize(name string) int {
 // single-key paths, the clear is not acknowledged as successful unless its WAL
 // record is durable.
 func (s *Service) localClearMap(name string) (int, error) {
-	removed := s.store.clearMap(name)
-	if s.wal != nil && len(removed) > 0 {
-		if err := s.wal.appendClear(name); err != nil {
-			return len(removed), err
-		}
-	}
-	return len(removed), nil
+	var removed []entry
+	// clearMap and its single WAL record run atomically under the WAL lock, so a
+	// concurrent Put to the same map cannot land between them and then be ordered
+	// before the clear in the WAL (which crash recovery would replay as a lost put).
+	err := s.logged(
+		func() { removed = s.store.clearMap(name) },
+		func() error {
+			if len(removed) == 0 {
+				return nil
+			}
+			return s.wal.appendLocked(walOpClear, &medusav1.SnapshotEntry{Map: name})
+		},
+	)
+	return len(removed), err
 }
 
 // sendClear tells a peer to clear all its entries for the named map.

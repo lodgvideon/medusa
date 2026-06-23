@@ -62,16 +62,23 @@ func (w *wal) appendRemove(name string, key []byte) error {
 	return w.append(walOpRemove, &medusav1.SnapshotEntry{Map: name, Key: key})
 }
 
-// appendClear records that every entry for a map was removed, as a single
-// durable record. One fsync makes the whole clear atomic on replay — no
-// per-entry window where some removals are durable and others are not.
-func (w *wal) appendClear(name string) error {
-	return w.append(walOpClear, &medusav1.SnapshotEntry{Map: name})
-}
-
 // append frames and writes one record, then fsyncs so the write is durable
 // before the caller acknowledges it.
 func (w *wal) append(op byte, e *medusav1.SnapshotEntry) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.appendLocked(op, e)
+}
+
+// appendLocked is append without taking w.mu — the caller must already hold it.
+// The apply paths hold w.mu across the store mutation AND this append so the
+// store-apply order and the WAL order cannot diverge: two concurrent conflicting
+// writes (e.g. a put racing a clear of the same map, or two puts of the same key)
+// are serialized here, so crash recovery replays them in the same order they hit
+// the store. Without this, the store mutation (under a shard lock) and the append
+// (under w.mu) are separate critical sections, and a crash could replay a
+// different — and wrong — final state than was live.
+func (w *wal) appendLocked(op byte, e *medusav1.SnapshotEntry) error {
 	payload, err := e.MarshalVT()
 	if err != nil {
 		return err
@@ -80,8 +87,6 @@ func (w *wal) append(op byte, e *medusav1.SnapshotEntry) error {
 	binary.BigEndian.PutUint32(hdr[:4], uint32(len(payload)))
 	hdr[4] = op
 
-	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.f == nil {
 		return os.ErrClosed
 	}

@@ -50,13 +50,14 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   past its turn) is detected. Acquiring a lock you already hold returns your
   existing token (idempotent), so a failover retry is safe rather than a false
   negative. Built on the same atomic owner-side processors
-  (`lockacquire`/`lockrelease`); the fence survives release and graceful
-  migration. **Caveat:** it is a single-owner lock, and the fence is strictly
-  monotonic only while the owner is live / across a graceful handoff — an
-  *ungraceful* owner crash where the promoted backup missed the last acquire can
-  reissue a token (best-effort replication, an AP design). Crash-safe monotonic
-  fencing needs synchronous/consensus fence replication (roadmap); the `holder`
-  is a cooperative id, not authenticated.
+  (`lockacquire`/`lockrelease`). **Caveat:** it is a single-owner lock, and the
+  fence is strictly monotonic only while one owner serves the key uncontended —
+  *not* across an ungraceful owner crash (a promoted backup may have missed the
+  last acquire) nor a partition migration (an acquire routed to the old owner on
+  a stale table during the handoff is not propagated to the new owner, which
+  reissues the token). Both stem from the AP, best-effort-replication model;
+  strict fencing needs synchronous/consensus replication or a quiescent handoff
+  (roadmap). The `holder` is a cooperative id, not authenticated.
 - **Replication (configurable factor)** — every write is synchronously copied to
   `Backups` distinct backup owners (default 1; env `MEDUSA_BACKUPS`). A cluster
   tolerates that many simultaneous holder failures with no data loss: when the
@@ -351,10 +352,10 @@ bash k8s/e2e.sh            # or: go test -tags k8s -run TestK8sE2E -timeout 15m 
   deletes), not just receives missing/stale values — the push-only residual.
   Doing it safely needs a per-entry version so a freshly-replicated write is not
   pruned by a slightly-stale reconcile manifest.
-- Crash-safe fence monotonicity: synchronous or consensus replication of the
-  fenced-lock token so it stays strictly increasing even across an ungraceful
-  owner crash (today it is monotonic only while the owner is live / across a
-  graceful handoff — see the `Map.Lock` caveat).
+- Strict fence monotonicity: synchronous/consensus replication or a quiescent
+  partition handoff so the fenced-lock token stays strictly increasing even
+  across an ungraceful crash or a migration window (today it can be reissued in
+  those cases — see the `Map.Lock` caveat).
 - Intern map names (or use integer map handles) to make the remote read path
   fully zero-alloc.
 - Phi-accrual failure detection with a background heartbeat loop.

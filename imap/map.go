@@ -252,17 +252,19 @@ func (mp *Map) CompareAndSwap(ctx context.Context, key, expected, newVal []byte)
 //
 // Acquiring a lock you already hold returns your existing token (idempotent), so
 // a retry after an ambiguous/owner-failover call is safe — it returns the token
-// rather than a false negative. The fence survives release and graceful ownership
-// migration. Manage a lock key only through Lock/Unlock — not Put/Get/Remove.
+// rather than a false negative. Manage a lock key only through Lock/Unlock — not
+// Put/Get/Remove.
 //
-// Monotonicity caveat: the fence is strictly increasing while the same owner is
-// live and across a graceful handoff, but NOT guaranteed across an ungraceful
-// owner crash. Replication to backups is best-effort (an AP design), so a backup
-// promoted after a crash may have missed the last acquire and reissue a token
-// that is already live elsewhere. Crash-safe monotonic fencing needs synchronous
-// or consensus replication of the fence, which medusa does not do — see the
-// roadmap. holder is a cooperative identity, not authenticated: any caller that
-// presents a holder's id can release or re-enter that holder's lock.
+// Monotonicity caveat: the fence is strictly increasing while one owner serves
+// the key uncontended, but NOT guaranteed across (a) an ungraceful owner crash —
+// a backup promoted after a crash may have missed the last acquire (best-effort
+// replication) and reissue a live token; or (b) a partition migration — an
+// acquire routed to the old owner on a stale table during the snapshot→handoff
+// window is not propagated to the new owner, which then reissues the same token.
+// Both stem from the AP, single-owner, best-effort-replication model; strict
+// fencing needs synchronous/consensus replication or a quiescent handoff (see the
+// roadmap). holder is a cooperative identity, not authenticated: any caller that
+// presents a holder's id can release or re-enter that lock.
 func (mp *Map) Lock(ctx context.Context, key, holder []byte) (token uint64, acquired bool, err error) {
 	if len(holder) == 0 {
 		return 0, false, errEmptyHolder

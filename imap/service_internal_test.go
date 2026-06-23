@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -429,6 +431,48 @@ func TestClearWALNoResurrection(t *testing.T) {
 	if got := all(s2); got != 0 {
 		t.Fatalf("clear not replayed: %d entries resurrected after crash+replay", got)
 	}
+}
+
+// TestWALReplayMatchesLiveUnderConcurrentConflict is the regression guard for the
+// WAL store-order vs append-order bug: a put racing a remove (or a clear) of the
+// same key/map must, however the race resolves in the live store, be replayed by
+// a snapshot-less WAL recovery to EXACTLY that live state. Before the fix that
+// holds the WAL lock across the store mutation and its append, the two orders
+// could diverge and replay would lose the put or resurrect the removed key.
+func TestWALReplayMatchesLiveUnderConcurrentConflict(t *testing.T) {
+	dir := t.TempDir()
+	key := []byte("k")
+	p := partition.For(key)
+	ctx := context.Background()
+
+	run := func(label string, rounds int, racer func(s *Service)) {
+		for r := 0; r < rounds; r++ {
+			path := filepath.Join(dir, label+strconv.Itoa(r)+".log")
+			s := svcWith(&fakeTransport{})
+			if err := s.OpenWAL(path); err != nil {
+				t.Fatalf("%s open: %v", label, err)
+			}
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() { defer wg.Done(); _, _ = s.applyPut(ctx, "m", key, []byte("v"), 0, true) }()
+			go func() { defer wg.Done(); racer(s) }()
+			wg.Wait()
+			lv, lok := s.store.get(p, "m", key)
+			_ = s.CloseWAL()
+
+			s2 := svcWith(&fakeTransport{})
+			if err := s2.OpenWAL(path); err != nil {
+				t.Fatalf("%s reopen: %v", label, err)
+			}
+			rv, rok := s2.store.get(p, "m", key)
+			_ = s2.CloseWAL()
+			if lok != rok || string(lv) != string(rv) {
+				t.Fatalf("%s round %d: live=(%q,%v) replay=(%q,%v): WAL order diverged from store order", label, r, lv, lok, rv, rok)
+			}
+		}
+	}
+	run("putremove", 200, func(s *Service) { _, _ = s.applyRemove(ctx, "m", key, true) })
+	run("putclear", 100, func(s *Service) { _, _ = s.localClearMap("m") })
 }
 
 func TestHandleRejectsCorruptPayload(t *testing.T) {
