@@ -179,6 +179,10 @@ func TestFencedLockDistributed(t *testing.T) {
 	if tok3, ok, err := b.svc.Map("locks").Lock(ctx, key, n2); err != nil || !ok || tok3 != 2 {
 		t.Fatalf("re-acquire = %d,%v,%v; want 2,true,nil (fence must advance)", tok3, ok, err)
 	}
+	// An empty holder is rejected up front (it is the "free" sentinel).
+	if _, _, err := a.svc.Map("locks").Lock(ctx, []byte("other"), nil); err == nil {
+		t.Fatal("Lock with empty holder must error")
+	}
 }
 
 func TestPutGetAcrossNodes(t *testing.T) {

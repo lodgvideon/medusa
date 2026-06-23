@@ -170,6 +170,11 @@ func fenceBytes(f uint64) []byte {
 // your existing token — which makes the at-least-once failover retry safe (the
 // retry sees its own holder and gets the same token instead of a false "lost").
 func lockAcquireProc(cur []byte, _ bool, arg []byte) ([]byte, Action, []byte) {
+	if len(arg) == 0 {
+		// A holder id is required: an empty holder is the "free" sentinel, so
+		// storing it would leave the lock acquirable by anyone. Refuse.
+		return nil, Keep, nil
+	}
 	fence, holder := decodeLock(cur)
 	if len(holder) > 0 {
 		if !bytes.Equal(holder, arg) {

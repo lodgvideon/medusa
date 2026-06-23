@@ -77,6 +77,12 @@ func TestLockProcs(t *testing.T) {
 	if _, a, out = lockAcquireProc(nv, true, h2); a != Set || binary.BigEndian.Uint64(out) != 2 {
 		t.Fatalf("re-acquire after release: action=%v out=%v; want set, fence 2", a, out)
 	}
+
+	// An empty holder must be refused — storing it would mark the lock free and
+	// let anyone "acquire" it.
+	if newVal, a, out := lockAcquireProc(nil, false, nil); a != Keep || out != nil || newVal != nil {
+		t.Fatalf("empty-holder acquire: newVal=%v action=%v out=%v; want keep, nil, nil", newVal, a, out)
+	}
 }
 
 // TestRegisterAndExecuteCustomProcessor covers custom processor registration and

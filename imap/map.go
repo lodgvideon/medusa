@@ -3,11 +3,16 @@ package imap
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"time"
 
 	"github.com/lodgvideon/medusa/metrics"
 	"github.com/lodgvideon/medusa/partition"
 )
+
+// errEmptyHolder guards the lock API: an empty holder is the lock's "free"
+// sentinel, so it can never identify an owner.
+var errEmptyHolder = errors.New("imap: lock holder must be non-empty")
 
 // Map is a handle to a named distributed map. Operations route to the partition
 // owner; if the owner is unreachable they fall back to the backups in replica
@@ -249,6 +254,9 @@ func (mp *Map) CompareAndSwap(ctx context.Context, key, expected, newVal []byte)
 // rather than a false negative. The fence survives release and ownership
 // migration. Manage a lock key only through Lock/Unlock — not Put/Get/Remove.
 func (mp *Map) Lock(ctx context.Context, key, holder []byte) (token uint64, acquired bool, err error) {
+	if len(holder) == 0 {
+		return 0, false, errEmptyHolder
+	}
 	out, err := mp.Execute(ctx, key, "lockacquire", holder)
 	if err != nil {
 		return 0, false, err
@@ -263,6 +271,9 @@ func (mp *Map) Lock(ctx context.Context, key, holder []byte) (token uint64, acqu
 // (false if the caller did not hold it). The fence token is retained so the next
 // acquire is strictly greater.
 func (mp *Map) Unlock(ctx context.Context, key, holder []byte) (bool, error) {
+	if len(holder) == 0 {
+		return false, errEmptyHolder
+	}
 	out, err := mp.Execute(ctx, key, "lockrelease", holder)
 	if err != nil {
 		return false, err
