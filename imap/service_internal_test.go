@@ -388,6 +388,49 @@ func TestMigrateWALsHandoffDropNoResurrection(t *testing.T) {
 	}
 }
 
+// TestClearWALNoResurrection guards the clear durability path: after a checkpoint
+// captures the entries, a clear writes a single WAL record; a crash before the
+// next checkpoint must replay the clear (not the pre-clear snapshot entries).
+func TestClearWALNoResurrection(t *testing.T) {
+	walPath := filepath.Join(t.TempDir(), "wal.log")
+	s := svcWith(&fakeTransport{})
+	if err := s.OpenWAL(walPath); err != nil {
+		t.Fatalf("open wal: %v", err)
+	}
+	ctx := context.Background()
+	for _, k := range []string{"a", "b", "c"} {
+		if _, err := s.applyPut(ctx, "m", []byte(k), []byte("v"), 0, true); err != nil {
+			t.Fatalf("put %s: %v", k, err)
+		}
+	}
+	// Checkpoint: snapshot holds the 3 entries, WAL truncated.
+	var snap *medusav1.Snapshot
+	if err := s.Checkpoint(func(sn *medusav1.Snapshot) error { snap = sn; return nil }); err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	if n, err := s.localClearMap("m"); err != nil || n != 3 {
+		t.Fatalf("clear = %d,%v; want 3,nil", n, err)
+	}
+	if err := s.CloseWAL(); err != nil { // crash before the next checkpoint
+		t.Fatalf("close wal: %v", err)
+	}
+
+	all := func(svc *Service) int { return svc.store.countMap("m", func(int) bool { return true }) }
+
+	s2 := svcWith(&fakeTransport{})
+	s2.Restore(snap)
+	if got := all(s2); got != 3 {
+		t.Fatalf("snapshot should hold 3 entries before replay; got %d", got)
+	}
+	if err := s2.OpenWAL(walPath); err != nil {
+		t.Fatalf("reopen wal: %v", err)
+	}
+	defer s2.CloseWAL()
+	if got := all(s2); got != 0 {
+		t.Fatalf("clear not replayed: %d entries resurrected after crash+replay", got)
+	}
+}
+
 func TestHandleRejectsCorruptPayload(t *testing.T) {
 	svc := svcWith(&fakeTransport{})
 	bad := []byte{0xff, 0xff, 0xff} // not a valid protobuf message

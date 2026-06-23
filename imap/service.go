@@ -453,18 +453,19 @@ func (s *Service) localMapSize(name string) int {
 }
 
 // localClearMap removes all entries this node holds for the named map (owner and
-// backup copies) and records each removal in the WAL so a crash before the next
-// checkpoint cannot replay them. It returns the number removed.
-func (s *Service) localClearMap(name string) int {
+// backup copies) and records the clear durably as ONE WAL record, so a crash
+// before the next checkpoint replays the clear (not the pre-clear entries). It
+// returns the number removed and surfaces a WAL error to the caller — like the
+// single-key paths, the clear is not acknowledged as successful unless its WAL
+// record is durable.
+func (s *Service) localClearMap(name string) (int, error) {
 	removed := s.store.clearMap(name)
-	if s.wal != nil {
-		for _, e := range removed {
-			if err := s.wal.appendRemove(e.mapName, []byte(e.key)); err != nil {
-				break // best-effort; the periodic checkpoint is the backstop
-			}
+	if s.wal != nil && len(removed) > 0 {
+		if err := s.wal.appendClear(name); err != nil {
+			return len(removed), err
 		}
 	}
-	return len(removed)
+	return len(removed), nil
 }
 
 // sendClear tells a peer to clear all its entries for the named map.
@@ -566,6 +567,9 @@ func (s *Service) OpenWAL(path string) error {
 		},
 		func(name string, key []byte) {
 			s.store.remove(partition.For(key), name, key)
+		},
+		func(name string) {
+			s.store.clearMap(name)
 		},
 	)
 	if err != nil {
@@ -698,7 +702,11 @@ func (s *Service) Handle(reqType medusav1.MessageType, req, respBuf []byte) (med
 		if err := cr.UnmarshalVT(req); err != nil {
 			return 0, respBuf, err
 		}
-		out, err := codec.Marshal(respBuf, &medusav1.ClearResponse{Removed: uint64(s.localClearMap(cr.Map))})
+		removed, cerr := s.localClearMap(cr.Map)
+		if cerr != nil {
+			return 0, respBuf, cerr
+		}
+		out, err := codec.Marshal(respBuf, &medusav1.ClearResponse{Removed: uint64(removed)})
 		return medusav1.MessageType_MESSAGE_TYPE_CLEAR_RESPONSE, out, err
 
 	default:

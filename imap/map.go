@@ -329,7 +329,9 @@ func (mp *Map) Clear(ctx context.Context) error {
 	var firstErr error
 	for _, m := range mp.svc.mem.Members() {
 		if m.ID == mp.svc.self {
-			mp.svc.localClearMap(mp.name)
+			if _, err := mp.svc.localClearMap(mp.name); err != nil && firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		if _, err := mp.svc.sendClear(ctx, m.Addr, mp.name); err != nil && firstErr == nil {

@@ -33,6 +33,7 @@ type wal struct {
 const (
 	walOpPut    byte = 1
 	walOpRemove byte = 2
+	walOpClear  byte = 3 // remove every entry for a map (payload: SnapshotEntry with only Map set)
 )
 
 // openWAL opens (creating if needed) the log at path and positions the write
@@ -59,6 +60,13 @@ func (w *wal) appendPut(name string, key, value []byte, expireAt int64) error {
 
 func (w *wal) appendRemove(name string, key []byte) error {
 	return w.append(walOpRemove, &medusav1.SnapshotEntry{Map: name, Key: key})
+}
+
+// appendClear records that every entry for a map was removed, as a single
+// durable record. One fsync makes the whole clear atomic on replay — no
+// per-entry window where some removals are durable and others are not.
+func (w *wal) appendClear(name string) error {
+	return w.append(walOpClear, &medusav1.SnapshotEntry{Map: name})
 }
 
 // append frames and writes one record, then fsyncs so the write is durable
@@ -122,7 +130,7 @@ func (w *wal) close() error {
 // on a later replay. A missing file is not an error (first start). Reading stops
 // cleanly at the first torn or corrupt record, since such a record was never
 // acknowledged.
-func replayWAL(path string, put func(name string, key, value []byte, expireAt int64), del func(name string, key []byte)) (int64, error) {
+func replayWAL(path string, put func(name string, key, value []byte, expireAt int64), del func(name string, key []byte), clr func(name string)) (int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -154,6 +162,8 @@ func replayWAL(path string, put func(name string, key, value []byte, expireAt in
 			put(e.Map, e.Key, e.Value, e.ExpireAt)
 		case walOpRemove:
 			del(e.Map, e.Key)
+		case walOpClear:
+			clr(e.Map)
 		}
 		valid += int64(len(hdr)) + int64(n)
 	}

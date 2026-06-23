@@ -123,6 +123,7 @@ func TestWALReplayStopsAtTornRecord(t *testing.T) {
 	if _, err := replayWAL(path,
 		func(_ string, k, v []byte, _ int64) { got[string(k)] = string(v) },
 		func(_ string, k []byte) { delete(got, string(k)) },
+		func(_ string) { clear(got) },
 	); err != nil {
 		t.Fatalf("replay: %v", err)
 	}
@@ -190,6 +191,7 @@ func TestWALReplaySkipsCorruptRecord(t *testing.T) {
 	if _, err := replayWAL(path,
 		func(_ string, k, v []byte, _ int64) { got[string(k)] = string(v) },
 		func(_ string, k []byte) { delete(got, string(k)) },
+		func(_ string) { clear(got) },
 	); err != nil {
 		t.Fatalf("replay: %v", err)
 	}
