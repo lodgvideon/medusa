@@ -584,6 +584,11 @@ func (s *Service) Handle(reqType medusav1.MessageType, req, respBuf []byte) (med
 		if err := dr.UnmarshalVT(req); err != nil {
 			return 0, respBuf, err
 		}
+		// Partition comes off the wire — bounds-check before indexing the shard
+		// array so a malformed or incompatible peer cannot panic this node.
+		if dr.Partition >= partition.Count {
+			return 0, respBuf, fmt.Errorf("imap: digest request partition %d out of range", dr.Partition)
+		}
 		match := s.store.partitionDigest(int(dr.Partition)) == dr.Digest
 		out, err := codec.Marshal(respBuf, &medusav1.DigestResponse{Match: match})
 		return medusav1.MessageType_MESSAGE_TYPE_DIGEST_RESPONSE, out, err

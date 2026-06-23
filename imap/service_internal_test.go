@@ -212,6 +212,42 @@ func TestPartitionDigest(t *testing.T) {
 	}
 }
 
+// TestPartitionDigestBinaryBoundary is the regression guard for the digest
+// boundary-ambiguity bug: with a fixed separator, (key="k\x00",value="v") and
+// (key="k",value="\x00v") hashed identically and XOR-cancelled, falsely matching
+// an empty backup. Length-prefixing must keep them distinct.
+func TestPartitionDigestBinaryBoundary(t *testing.T) {
+	a := newStore()
+	a.put(0, "m", []byte("k\x00"), []byte("v"), 0)
+	b := newStore()
+	b.put(0, "m", []byte("k"), []byte("\x00v"), 0)
+	if a.partitionDigest(0) == b.partitionDigest(0) {
+		t.Fatal("length-prefixing must distinguish binary key/value boundary shifts")
+	}
+	// And the map-name/key boundary.
+	c := newStore()
+	c.put(0, "a\x00", []byte("b"), []byte("v"), 0)
+	d := newStore()
+	d.put(0, "a", []byte("\x00b"), []byte("v"), 0)
+	if c.partitionDigest(0) == d.partitionDigest(0) {
+		t.Fatal("length-prefixing must distinguish map-name/key boundary shifts")
+	}
+}
+
+// TestHandleDigestRequestOutOfRange verifies an out-of-range partition on the
+// wire is rejected with an error rather than panicking on a slice index.
+func TestHandleDigestRequestOutOfRange(t *testing.T) {
+	svc := svcWith(&fakeTransport{})
+	req := &medusav1.DigestRequest{Partition: uint32(partition.Count) + 7}
+	b, err := req.MarshalVT()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if _, _, err := svc.Handle(medusav1.MessageType_MESSAGE_TYPE_DIGEST_REQUEST, b, nil); err == nil {
+		t.Fatal("out-of-range digest partition must return an error, not panic")
+	}
+}
+
 // TestSyncBackupsSkipsInSyncBackup verifies the digest gate: when the backup
 // already holds identical content, the owner sends no data (pushed == 0).
 func TestSyncBackupsSkipsInSyncBackup(t *testing.T) {

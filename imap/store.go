@@ -2,6 +2,7 @@ package imap
 
 import (
 	"bytes"
+	"encoding/binary"
 	"sync"
 	"time"
 
@@ -141,6 +142,14 @@ func (s *store) snapshotPartition(p int) []entry {
 // Two replicas holding the same set of (map,key,value) triples produce the same
 // digest, so anti-entropy can detect divergence without transferring data.
 //
+// Each field is LENGTH-PREFIXED (big-endian uint32) before hashing rather than
+// separated by a sentinel byte: keys and values are arbitrary binary (proto
+// bytes), so any fixed separator can appear inside a field and create a
+// boundary ambiguity — e.g. (key="k\x00",value="v") and (key="k",value="\x00v")
+// would otherwise hash identically and XOR-cancel, falsely matching an empty
+// backup and suppressing a needed heal. Length-prefixing makes the per-entry
+// stream injective over (map,key,value) regardless of byte content.
+//
 // Expiry is intentionally excluded: replicas derive a fresh absolute expireAt
 // from the remaining TTL at the instant each receives the write, so it legitimately
 // differs for the same logical entry — including it would make in-sync replicas
@@ -151,16 +160,20 @@ func (s *store) partitionDigest(p int) uint64 {
 	sh.mu.RLock()
 	defer sh.mu.RUnlock()
 	var digest uint64
+	var lbuf [4]byte
 	for name, inner := range sh.m {
 		for k, v := range inner {
 			if v.expired(now) {
 				continue
 			}
-			h := fnv1a(fnvOffset64, []byte(name))
-			h = fnv1a(h, []byte{0}) // separator: avoid (name|key) vs (name'|key') collisions
+			h := uint64(fnvOffset64)
+			binary.BigEndian.PutUint32(lbuf[:], uint32(len(name)))
+			h = fnv1a(h, lbuf[:])
+			h = fnv1a(h, []byte(name))
+			binary.BigEndian.PutUint32(lbuf[:], uint32(len(k)))
+			h = fnv1a(h, lbuf[:])
 			h = fnv1a(h, []byte(k))
-			h = fnv1a(h, []byte{0})
-			h = fnv1a(h, v.data)
+			h = fnv1a(h, v.data) // terminal field — its length is implied
 			digest ^= h
 		}
 	}
