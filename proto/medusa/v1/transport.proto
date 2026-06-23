@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package medusa.v1;
+
+// MessageType discriminates the payload carried in a transport frame.
+// The frame header carries this as a single byte, so the receiver knows
+// which concrete message to UnmarshalVT without a wrapping oneof — which
+// would cost an extra heap allocation on every RPC.
+enum MessageType {
+  MESSAGE_TYPE_UNSPECIFIED = 0;
+  MESSAGE_TYPE_ERROR = 1;
+  MESSAGE_TYPE_JOIN_REQUEST = 2;
+  MESSAGE_TYPE_JOIN_RESPONSE = 3;
+  MESSAGE_TYPE_HEARTBEAT = 4;
+  MESSAGE_TYPE_MEMBER_LIST = 5;
+  MESSAGE_TYPE_PUT_REQUEST = 6;
+  MESSAGE_TYPE_PUT_RESPONSE = 7;
+  MESSAGE_TYPE_GET_REQUEST = 8;
+  MESSAGE_TYPE_GET_RESPONSE = 9;
+  MESSAGE_TYPE_REMOVE_REQUEST = 10;
+  MESSAGE_TYPE_REMOVE_RESPONSE = 11;
+  MESSAGE_TYPE_LEAVE = 12;
+  MESSAGE_TYPE_EXECUTE_REQUEST = 13;
+  MESSAGE_TYPE_EXECUTE_RESPONSE = 14;
+}
+
+// Error is returned in place of a response payload when an RPC fails.
+message Error {
+  uint32 code = 1;
+  string message = 2;
+}

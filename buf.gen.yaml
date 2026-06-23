@@ -1,0 +1,19 @@
+version: v2
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/lodgvideon/medusa/genproto
+plugins:
+  # Base Go structs (google.golang.org/protobuf).
+  - local: protoc-gen-go
+    out: genproto
+    opt: paths=source_relative
+  # Zero-alloc marshal/unmarshal/size. We intentionally omit the `pool`
+  # feature and manage our own sync.Pool in Go to avoid the extra
+  # vtproto options-proto dependency.
+  - local: protoc-gen-go-vtproto
+    out: genproto
+    opt:
+      - paths=source_relative
+      - features=marshal+unmarshal+size

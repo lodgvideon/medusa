@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package medusa.v1;
+
+// Member is a single node in the cluster.
+message Member {
+  string id = 1;    // stable, unique node id
+  string addr = 2;  // host:port the node's transport listens on
+}
+
+// JoinRequest is sent by a joining node to a seed node.
+message JoinRequest {
+  Member candidate = 1;
+}
+
+// JoinResponse returns the seed's full membership view.
+message JoinResponse {
+  repeated Member members = 1;
+}
+
+// Heartbeat is sent periodically to assert liveness.
+message Heartbeat {
+  string member_id = 1;
+  uint64 sequence = 2;
+}
+
+// MemberList is the gossiped membership view. version is a monotonically
+// increasing epoch so receivers can ignore stale views.
+message MemberList {
+  repeated Member members = 1;
+  uint64 version = 2;
+}
+
+// LeaveRequest announces that a member is departing gracefully, so peers remove
+// it and rebalance immediately instead of waiting for failure detection.
+message LeaveRequest {
+  string member_id = 1;
+}

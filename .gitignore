@@ -1,0 +1,19 @@
+# Build artifacts
+/bin/
+*.exe
+*.test
+
+# Coverage
+coverage*
+cov_*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# Editor
+.idea/
+.vscode/
+
+# Scratch
+COMMIT_MSG.tmp

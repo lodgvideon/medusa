@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          files=$(git ls-files '*.go' | grep -vE '^(vendor|genproto)/')
+          unformatted=$(gofmt -l $files)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: vet
+        run: go vet ./...
+
+      - name: build
+        run: go build ./...
+
+      # The race detector runs here (ubuntu runners have a C compiler), covering
+      # ground the dev machine cannot — it has no cgo toolchain.
+      - name: test (race + coverage)
+        run: go test -race -count=1 -timeout 180s -coverprofile=coverage.out ./...
+
+      - name: coverage (excluding generated code)
+        run: |
+          grep -v 'genproto/' coverage.out > coverage.src.out || true
+          go tool cover -func=coverage.src.out | tail -1
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Build the deployable image. Dependencies are vendored, so this is
+      # hermetic — no module download or registry credentials needed.
+      - name: docker build
+        run: docker build -t medusa:ci .

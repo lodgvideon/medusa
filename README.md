@@ -1,0 +1,278 @@
+# medusa
+
+[![ci](https://github.com/lodgvideon/medusa/actions/workflows/ci.yml/badge.svg)](https://github.com/lodgvideon/medusa/actions/workflows/ci.yml)
+
+A small, **zero-allocation-oriented distributed in-memory data grid** in Go — a
+Hazelcast-style cluster of nodes that together host partitioned, replicated maps
+and talk to each other over **protobuf**.
+
+Built test-first, with a 90%+ coverage gate and allocation assertions baked into
+the test suite.
+
+```
+package        coverage     hot-path benchmark
+─────────────  ─────────    ─────────────────────────────────────────
+medusa            100.0%    BenchmarkMarshal      7.3 ns/op  0 allocs/op
+partition         100.0%    BenchmarkMapGetLocal 22.8 ns/op  0 allocs/op
+imap               93.8%
+transport          92.3%
+cluster            92.4%
+codec              91.7%
+─────────────  ─────────
+total (src)        93.5%    (excludes generated genproto/)
+```
+
+## What it does
+
+- **Distributed map (`IMap`)** — a named key/value store whose entries are
+  spread across 271 partitions. Any node can serve any key by routing to the
+  partition owner.
+- **Distributed compute (EntryProcessor)** — `Map.Execute(key, "incr", arg)`
+  runs a named server-side processor *atomically on the key's owner* (read-
+  modify-write under the shard lock), so e.g. an atomic distributed counter
+  has no lost updates under concurrency — no data movement, one round trip.
+  Built-ins: `incr`, `append`, `getset`, `delete`; register your own. Also over
+  HTTP: `POST /v1/maps/{m}/{k}/execute?proc=incr`.
+- **Replication** — every write is copied to one backup owner, so a single node
+  failure loses no data. Reads and writes transparently fail over to the backup
+  when the primary is unreachable.
+- **Elastic scaling** — when a node joins, the partitions it now owns migrate to
+  it automatically (verified in k8s: scaling 3→5 redistributes data and the new
+  pods serve their share).
+- **Zero-data-loss rolling restart** — on SIGTERM a node hands off its partitions
+  and announces its departure before exiting, so peers rebalance with the data
+  already in place (verified in k8s: a rolling restart of all 3 pods preserves
+  100% of entries).
+- **Entry TTL** — `Map.PutTTL` (or `PUT …?ttl=5s`) sets a per-entry expiry;
+  expired entries read as absent (lazy) and are reclaimed by a background sweeper
+  (active). TTL is replicated to backups and preserved across migration.
+- **Observability** — a Prometheus `GET /metrics` endpoint (hand-rolled, no
+  dependency) exposes op counts, members, entries, evictions, migrations, and
+  TTL sweeps; structured logs via stdlib `slog` (JSON in the node binary).
+- **Persistence** — with `Config.DataDir` (env `MEDUSA_DATA_DIR`, a PVC in k8s)
+  each node snapshots its store to disk periodically and on shutdown, and reloads
+  it on start, so the cluster survives a *whole-cluster* restart (not just
+  rolling). Verified in k8s: delete all pods, data reloads from each PVC.
+- **Cluster membership** — nodes join via seeds, gossip their views to
+  converge, and a heartbeat detector evicts a peer after several missed beats
+  (tombstoned so gossip can't resurrect it; an explicit rejoin clears it). No
+  coordinator: each node derives an identical partition table from the (sorted)
+  member set. Crashes are survived with zero data loss (verified in k8s by
+  force-killing a pod).
+- **Poseidon HTTP/2 transport** — node-to-node RPC runs over the
+  [poseidon-http-client](https://github.com/lodgvideon/poseidon-http-client) /
+  [poseidon-http-server](https://github.com/lodgvideon/poseidon-http-server)
+  stack (h2c, cleartext). A custom length-prefixed raw-TCP transport and an
+  in-memory transport sit behind the same interface for large payloads and
+  fast tests respectively.
+
+## Architecture
+
+```
+                         ┌──────────────────────────┐
+   client code  ───────► │  medusa.Node             │   public API
+                         │  (dispatch by msg type)  │
+                         └────────────┬─────────────┘
+              ┌───────────────────────┼───────────────────────┐
+              ▼                       ▼                         ▼
+      ┌──────────────┐      ┌──────────────────┐      ┌──────────────────┐
+      │  cluster     │      │  imap            │      │  transport       │
+      │  membership  │◄────►│  Service + Map   │◄────►│  TCP / in-memory │
+      │  + table     │      │  + sharded store │      │  framed protobuf │
+      └──────┬───────┘      └────────┬─────────┘      └──────────────────┘
+             │                       │
+             ▼                       ▼
+      ┌──────────────┐      ┌──────────────────┐
+      │  partition   │      │  codec           │
+      │  hash+table  │      │  vtproto 0-alloc │
+      └──────────────┘      └──────────────────┘
+```
+
+| Package      | Responsibility |
+|--------------|----------------|
+| `codec`      | Zero-alloc marshal/unmarshal helpers over vtprotobuf; reusable buffer pool. |
+| `transport`  | `Transport` interface with three implementations: Poseidon HTTP/2 (default), raw framed TCP, and an in-memory `Switch`. |
+| `partition`  | `For(key)` hash and the deterministic partition→owner/backup `Table`. |
+| `cluster`    | `Membership`: join, gossip, heartbeat eviction; derives the partition table. |
+| `imap`       | The distributed map: owner routing, backup replication, sharded local store. |
+| `medusa`     | `Node`: wires the layers together and dispatches inbound frames. |
+| `genproto/`  | Generated protobuf code (committed; regenerate with `make gen`). |
+
+## Wire protocol
+
+A medusa RPC is one request/response carrying a message type and a protobuf
+payload; the `Transport` interface hides how that crosses the network.
+
+- **Poseidon transport (default):** each RPC is an HTTP/2 `POST` over h2c — the
+  message type rides in an `m-type` header, the protobuf payload is the body,
+  and a handler error becomes a `500` carrying a protobuf `Error`.
+- **Raw TCP transport:** a frame is `[uint32 big-endian payload length][1 byte
+  message type][payload]`. The single type byte tells the receiver which
+  vtprotobuf message to decode — no wrapping `oneof`, which would add a heap
+  allocation per RPC.
+
+Schemas live in [`proto/medusa/v1`](proto/medusa/v1).
+
+### Poseidon transport sizing (v0.3.0)
+
+The per-message ceiling is the advertised HTTP/2 **stream window**, which medusa
+sets to **16 MiB** on both ends. The client chunks a body into 16 KiB DATA
+frames and the server refunds the connection window as it reads, so values up to
+several MiB round-trip fine (verified to 1 MiB in tests; the cap is reached only
+*at* the 16 MiB window because v0.3.0 doesn't refund the per-stream window
+mid-read). Raise `initialWindow` in `transport/poseidon.go` (max 2³¹−1) for
+larger values, or inject the raw TCP transport via
+`Config.Transport: transport.NewTCP(addr)`.
+
+Two integration gotchas worth noting (both worked around in `transport/poseidon.go`):
+
+- `Serve` must receive a **cancelable** context — it blocks on `ctx.Done()`, and
+  `context.Background().Done()` is nil, so `Close` would hang. The listener must
+  also be closed explicitly; `srv.Close()` alone doesn't unblock `Accept` when no
+  connection was ever made.
+- The net/http compatibility layer leaves `r.Body == nil` for empty-body
+  requests (stdlib guarantees non-nil), so the handler guards before reading.
+
+## On "zero allocation"
+
+Standard `google.golang.org/protobuf` allocates on every `Marshal`. We use
+[vtprotobuf](https://github.com/planetscale/vtprotobuf) (`marshal+unmarshal+size`)
+to marshal into buffers we own and reuse. Concretely:
+
+- **Encoding** into a warm buffer: **0 allocs** (asserted by `TestMarshalZeroAlloc`).
+- **Decoding** value-carrying messages into a reused struct: **0 allocs**
+  (`TestUnmarshalZeroAlloc`).
+- **Local map read** (`Map.Get` on a locally-owned key): **0 allocs**
+  (`TestLocalGetZeroAlloc`) — `m[string(key)]` lookups are alloc-free by the Go
+  compiler, and the stored value slice is returned directly (read-only).
+- **Server read handler** marshals the value straight into the connection's
+  reusable response buffer.
+
+Honest caveats: **writes allocate** (the value must be copied into the store);
+a *remote* read incurs a small bounded number of allocations from protobuf
+`string` fields (e.g. the map name) on the receiver; and the **Poseidon HTTP/2
+transport allocates** as any HTTP/2 stack does (HPACK, framing, header maps).
+The zero-alloc guarantees are scoped to serialization, local reads, and the
+in-memory transport — not the cross-node HTTP/2 path. The string-field
+allocations can be eliminated by interning map names — see the roadmap.
+
+## Quick start
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/lodgvideon/medusa"
+)
+
+func main() {
+	ctx := context.Background()
+
+	// Seed node.
+	a, _ := medusa.New(medusa.Config{ID: "a", Addr: "127.0.0.1:7701"})
+	defer a.Close()
+
+	// Second node joins via the seed.
+	b, _ := medusa.New(medusa.Config{ID: "b", Addr: "127.0.0.1:7702"})
+	defer b.Close()
+	_ = b.Join(ctx, []string{"127.0.0.1:7701"})
+
+	// Write on one node, read it back from the other — it routes to the owner.
+	_ = a.Map("users").Put(ctx, []byte("alice"), []byte("active"))
+	v, ok, _ := b.Map("users").Get(ctx, []byte("alice"))
+	fmt.Printf("alice=%s found=%v\n", v, ok) // alice=active found=true
+}
+```
+
+## Building & testing
+
+Requires **Go 1.26+**. The protobuf toolchain installs via `go install` (no
+manual protoc download — `buf` bundles its own compiler):
+
+```bash
+go install github.com/bufbuild/buf/cmd/buf@latest
+go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+go install github.com/planetscale/vtprotobuf/cmd/protoc-gen-go-vtproto@latest
+```
+
+```bash
+make gen     # regenerate protobuf code (buf lint + generate)
+make test    # run all tests
+make cover   # coverage report (source total excludes generated code)
+make bench   # benchmarks
+```
+
+> **Race detector:** `go test -race` needs cgo + a C compiler, which is not
+> required to build or test medusa. Install one (e.g. mingw-w64 gcc) to enable
+> `-race`; the concurrency tests still validate behavior without it.
+
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs gofmt, `go vet`,
+`go build`, `go test -race` (the runner has a C compiler), a coverage report, and
+a `docker build` on every push and pull request.
+
+## Running on Kubernetes
+
+A 3-node cluster ships in [`k8s/medusa.yaml`](k8s/medusa.yaml) (headless Service
+for peer DNS, ClusterIP Service for the admin API, StatefulSet with health
+probes). The node binary is `cmd/medusa-node`, configured via env
+(`MEDUSA_ID`, `MEDUSA_ADDR`, `MEDUSA_SEEDS`); nodes self-assemble via a
+background maintenance loop that retries joining until the cluster converges.
+
+```bash
+docker build -t medusa:dev .
+kubectl apply -f k8s/medusa.yaml
+kubectl rollout status statefulset/medusa
+kubectl port-forward svc/medusa-http 8080:8080
+curl -X PUT --data-binary hello localhost:8080/v1/maps/grid/k   # store on one node
+curl localhost:8080/v1/maps/grid/k                              # read from any node
+```
+
+Nodes advertise their stable pod DNS name (`medusa-N.medusa:7700`) while binding
+on `:7700`, so membership survives restarts even as pod IPs change — a rolling
+restart re-converges to a full cluster. Scaling out migrates data to new pods
+(`/stats` exposes each node's `localEntries`). Graceful-leave handoff (so a
+scale-down or rolling restart never loses data) and persistence are on the
+roadmap.
+
+An automated end-to-end suite ([`k8s/e2e.sh`](k8s/e2e.sh)) deploys a fresh
+cluster and asserts formation, cross-pod get, scale-out migration, and
+zero-data-loss rolling restart, then tears down. It skips cleanly when no
+cluster is reachable:
+
+```bash
+bash k8s/e2e.sh            # or: go test -tags k8s -run TestK8sE2E -timeout 15m .
+```
+
+> On Docker Desktop's (kind-based) Kubernetes, a rebuilt image under the same
+> tag is not re-synced into the cluster — bump the tag (`medusa:v2`, …); the
+> e2e script uses a fresh tag each run.
+
+## Design decisions & trade-offs
+
+- **Round-robin partition assignment** (`owner = p mod n`, `backup = p+1 mod n`).
+  Simplest scheme that keeps ownership balanced and backups distinct. Trade-off:
+  a membership change reshuffles most partitions.
+- **One synchronous backup.** Tolerates a single node failure. No quorum, no
+  configurable replication factor yet.
+- **Simple failure detector.** A single missed heartbeat evicts. Fine for small
+  clusters and tests; a production detector needs N consecutive misses
+  (phi-accrual) to ride out transient blips.
+- **Read-only returned slices.** Local `Get` returns the stored slice directly
+  to stay alloc-free; callers must not mutate it.
+- **Poseidon HTTP/2 as the default transport.** Node-to-node RPC dogfoods the
+  Poseidon client/server stack over h2c, behind the same `Transport` interface
+  as the raw-TCP and in-memory implementations. Trade-off: HTTP/2 allocates
+  (HPACK, framing) and a single message must fit the advertised 16 MiB stream
+  window; raw TCP remains available for anything larger.
+
+### Roadmap
+
+- Rendezvous (HRW) partitioning to minimize data movement on membership change.
+- Configurable backup count + read-repair / anti-entropy for replicas.
+- Intern map names (or use integer map handles) to make the remote read path
+  fully zero-alloc.
+- Phi-accrual failure detection with a background heartbeat loop.
+- Distributed compute (EntryProcessor / ExecutorService) on top of routing.

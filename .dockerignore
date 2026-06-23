@@ -1,0 +1,9 @@
+.git
+.idea
+.vscode
+/bin
+*.test
+*.out
+coverage*
+*.md
+k8s

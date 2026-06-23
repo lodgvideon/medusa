@@ -1,0 +1,95 @@
+# medusa: 3-node cluster on Kubernetes.
+#
+# Apply:   kubectl apply -f k8s/medusa.yaml
+# Status:  kubectl rollout status statefulset/medusa
+# Use:     kubectl port-forward svc/medusa-http 8080:8080
+#          curl -X PUT --data-binary hello localhost:8080/v1/maps/m/k
+#          curl localhost:8080/v1/maps/m/k
+# Tear:    kubectl delete -f k8s/medusa.yaml
+---
+# Headless service: gives each pod a stable DNS name medusa-<ordinal>.medusa,
+# which peers use to reach each other.
+apiVersion: v1
+kind: Service
+metadata:
+  name: medusa
+  labels: { app: medusa }
+spec:
+  clusterIP: None
+  selector: { app: medusa }
+  ports:
+    - { name: data, port: 7700 }
+    - { name: http, port: 8080 }
+---
+# Load-balanced service for the admin/data HTTP API (any node can serve any key).
+apiVersion: v1
+kind: Service
+metadata:
+  name: medusa-http
+  labels: { app: medusa }
+spec:
+  selector: { app: medusa }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: medusa
+  labels: { app: medusa }
+spec:
+  serviceName: medusa
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels: { app: medusa }
+  template:
+    metadata:
+      labels: { app: medusa }
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: medusa
+          image: medusa:v7
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: data, containerPort: 7700 }
+            - { name: http, containerPort: 8080 }
+          env:
+            - name: MEDUSA_ID
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
+            # Advertise the pod's stable DNS name (survives restarts; the pod IP
+            # does not). Bind on all interfaces.
+            - name: MEDUSA_ADDR
+              value: "$(MEDUSA_ID).medusa:7700"
+            - name: MEDUSA_BIND_ADDR
+              value: ":7700"
+            # Seed off every pod so any node can bootstrap and a restarted node
+            # rejoins immediately.
+            - name: MEDUSA_SEEDS
+              value: "medusa-0.medusa:7700,medusa-1.medusa:7700,medusa-2.medusa:7700"
+            # Persist snapshots so the cluster survives a whole-cluster restart.
+            - name: MEDUSA_DATA_DIR
+              value: /data
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels: { app: medusa }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: { storage: 128Mi }

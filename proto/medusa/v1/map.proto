@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package medusa.v1;
+
+// PutRequest writes a key/value into a named map. When backup is true the
+// request targets a backup owner and must not be re-replicated.
+message PutRequest {
+  string map = 1;
+  bytes key = 2;
+  bytes value = 3;
+  bool backup = 4;
+  // ttl_ms is the time-to-live in milliseconds; 0 means the entry never
+  // expires. On replication and migration it carries the remaining lifetime.
+  int64 ttl_ms = 5;
+}
+
+message PutResponse {
+  bool created = 1;  // true if the key was newly inserted (not an overwrite)
+}
+
+message GetRequest {
+  string map = 1;
+  bytes key = 2;
+}
+
+message GetResponse {
+  bool found = 1;
+  bytes value = 2;
+}
+
+message RemoveRequest {
+  string map = 1;
+  bytes key = 2;
+  bool backup = 3;
+}
+
+message RemoveResponse {
+  bool existed = 1;
+}
+
+// ExecuteRequest runs a named server-side processor against a key, atomically,
+// on the partition owner.
+message ExecuteRequest {
+  string map = 1;
+  bytes key = 2;
+  string processor = 3; // registered processor name (e.g. "incr")
+  bytes arg = 4;        // processor-specific argument
+}
+
+message ExecuteResponse {
+  bytes result = 1;
+}
+
+// SnapshotEntry is one persisted key/value with its absolute expiry.
+message SnapshotEntry {
+  string map = 1;
+  bytes key = 2;
+  bytes value = 3;
+  int64 expire_at = 4; // unix nanoseconds, 0 = never
+}
+
+// Snapshot is a node's full on-disk state, written periodically and reloaded on
+// restart so the cluster survives a whole-cluster outage.
+message Snapshot {
+  repeated SnapshotEntry entries = 1;
+}
