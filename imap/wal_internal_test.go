@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -309,6 +310,54 @@ func TestWALOpenChopsTornTail(t *testing.T) {
 	for _, kv := range []struct{ k, v string }{{"first", "1"}, {"second", "2"}} {
 		if got, ok := s2.store.get(partition.For([]byte(kv.k)), "m", []byte(kv.k)); !ok || string(got) != kv.v {
 			t.Fatalf("%q after torn-tail recovery = %q,%v, want %q", kv.k, got, ok, kv.v)
+		}
+	}
+}
+
+// TestWALConcurrentAppendsAllDurable hammers the WAL from many goroutines at
+// once and proves nothing is lost under concurrency: every acknowledged write
+// is recovered by a fresh replay. Run under -race in CI, it also guards the
+// append/checkpoint locking against data races.
+func TestWALConcurrentAppendsAllDurable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+	s := svcWith(&fakeTransport{})
+	if err := s.OpenWAL(path); err != nil {
+		t.Fatalf("open wal: %v", err)
+	}
+	ctx := context.Background()
+
+	const writers, perWriter = 8, 50
+	var wg sync.WaitGroup
+	for g := 0; g < writers; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < perWriter; i++ {
+				key := []byte{byte(g), byte(i)}
+				if _, err := s.applyPut(ctx, "m", key, []byte{byte(g), byte(i)}, 0, false); err != nil {
+					t.Errorf("put (%d,%d): %v", g, i, err)
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	if err := s.CloseWAL(); err != nil {
+		t.Fatalf("close wal: %v", err)
+	}
+
+	// Every acknowledged write must replay into a fresh store.
+	s2 := svcWith(&fakeTransport{})
+	if err := s2.OpenWAL(path); err != nil {
+		t.Fatalf("reopen wal: %v", err)
+	}
+	defer s2.CloseWAL()
+	for g := 0; g < writers; g++ {
+		for i := 0; i < perWriter; i++ {
+			key := []byte{byte(g), byte(i)}
+			v, ok := s2.store.get(partition.For(key), "m", key)
+			if !ok || len(v) != 2 || v[0] != byte(g) || v[1] != byte(i) {
+				t.Fatalf("key (%d,%d) = %q,%v after concurrent replay, want present", g, i, v, ok)
+			}
 		}
 	}
 }

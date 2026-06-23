@@ -22,7 +22,9 @@ import (
 // — is detected and dropped on replay; such a write was never acknowledged.
 //
 // The mutex also serialises checkpoints (see Service.Checkpoint): truncation
-// happens under it, so it cannot race a concurrent append.
+// happens under it, so it cannot race a concurrent append. (Group-committing the
+// fsync was explored but coalesced poorly here and added concurrency complexity
+// for little gain; it stays on the roadmap for benchmarking on the deploy OS.)
 type wal struct {
 	mu sync.Mutex
 	f  *os.File
