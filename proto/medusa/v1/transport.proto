@@ -22,6 +22,8 @@ enum MessageType {
   MESSAGE_TYPE_LEAVE = 12;
   MESSAGE_TYPE_EXECUTE_REQUEST = 13;
   MESSAGE_TYPE_EXECUTE_RESPONSE = 14;
+  MESSAGE_TYPE_DIGEST_REQUEST = 15;
+  MESSAGE_TYPE_DIGEST_RESPONSE = 16;
 }
 
 // Error is returned in place of a response payload when an RPC fails.

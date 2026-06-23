@@ -187,6 +187,37 @@ func (s *Service) sendRemove(ctx context.Context, addr, name string, key []byte,
 	return rr.Existed, nil
 }
 
+// sendDigest asks a backup whether its content digest for partition p matches
+// the owner's. The caller treats any error (or unexpected response) as "not in
+// sync" and falls back to pushing, so a digest probe never blocks reconciliation.
+func (s *Service) sendDigest(ctx context.Context, addr string, p int, digest uint64) (bool, error) {
+	reqBuf := codec.GetBuf()
+	dstBuf := codec.GetBuf()
+	defer codec.PutBuf(reqBuf)
+	defer codec.PutBuf(dstBuf)
+
+	req := medusav1.DigestRequest{Partition: uint32(p), Digest: digest}
+	rb, err := codec.Marshal((*reqBuf)[:0], &req)
+	if err != nil {
+		return false, err
+	}
+	*reqBuf = rb
+
+	respType, resp, err := s.tr.Send(ctx, addr, medusav1.MessageType_MESSAGE_TYPE_DIGEST_REQUEST, rb, (*dstBuf)[:0])
+	*dstBuf = resp
+	if err != nil {
+		return false, err
+	}
+	if respType != medusav1.MessageType_MESSAGE_TYPE_DIGEST_RESPONSE {
+		return false, fmt.Errorf("imap: unexpected digest response type %v", respType)
+	}
+	var dr medusav1.DigestResponse
+	if err := dr.UnmarshalVT(resp); err != nil {
+		return false, err
+	}
+	return dr.Match, nil
+}
+
 // applyExecute runs a named processor against key atomically on this (owner)
 // node and replicates the resulting state to the backup. It returns the
 // processor's result.
@@ -327,6 +358,11 @@ func (s *Service) Migrate(ctx context.Context, table *partition.Table) {
 // reconciles tombstones is the roadmap). Only owned partitions are pushed, so the
 // owner stays the single source of truth.
 //
+// Each partition is digest-gated: the owner sends each backup its content digest
+// and only pushes the data to backups whose digest differs (or that fail the
+// probe). In steady state, when replicas already match, a pass costs one tiny
+// digest RPC per backup and transfers nothing.
+//
 // Each entry is re-read from the owner's store (lookup) immediately before it is
 // pushed, and skipped if the owner no longer holds it — so a key deleted since
 // the snapshot is not resurrected on a backup. This leaves only the same narrow
@@ -336,18 +372,24 @@ func (s *Service) SyncBackups(ctx context.Context, table *partition.Table, start
 	p := ((start % partition.Count) + partition.Count) % partition.Count
 	for k := 0; k < batch; k++ {
 		if table.OwnerOf(p) == s.self {
-			// Collect this partition's live backup addresses once.
-			addrs := make([]string, 0, table.NumBackups(p))
+			// Probe each backup with the owner's digest; push only to those that
+			// report a mismatch (diverged) or fail the probe (treat as stale).
+			ownerDigest := s.store.partitionDigest(p)
+			var stale []string
 			for i, n := 0, table.NumBackups(p); i < n; i++ {
 				b, ok := table.BackupAt(p, i)
 				if !ok || b == s.self {
 					continue
 				}
-				if addr, ok := s.mem.AddrOf(b); ok {
-					addrs = append(addrs, addr)
+				addr, ok := s.mem.AddrOf(b)
+				if !ok {
+					continue
+				}
+				if match, err := s.sendDigest(ctx, addr, p, ownerDigest); err != nil || !match {
+					stale = append(stale, addr)
 				}
 			}
-			if len(addrs) > 0 {
+			if len(stale) > 0 {
 				for _, e := range s.store.snapshotPartition(p) {
 					// Re-read the owner's CURRENT state: a key deleted or changed
 					// since the snapshot must not be resurrected/clobbered on a
@@ -361,7 +403,7 @@ func (s *Service) SyncBackups(ctx context.Context, table *partition.Table, start
 						continue // expired in flight; let it lapse
 					}
 					sent := false
-					for _, addr := range addrs {
+					for _, addr := range stale {
 						if err := s.sendPut(ctx, addr, e.mapName, []byte(e.key), data, ttlMs, true); err == nil {
 							sent = true
 						}
@@ -536,6 +578,15 @@ func (s *Service) Handle(reqType medusav1.MessageType, req, respBuf []byte) (med
 		}
 		o, merr := codec.Marshal(respBuf, &medusav1.ExecuteResponse{Result: out})
 		return medusav1.MessageType_MESSAGE_TYPE_EXECUTE_RESPONSE, o, merr
+
+	case medusav1.MessageType_MESSAGE_TYPE_DIGEST_REQUEST:
+		var dr medusav1.DigestRequest
+		if err := dr.UnmarshalVT(req); err != nil {
+			return 0, respBuf, err
+		}
+		match := s.store.partitionDigest(int(dr.Partition)) == dr.Digest
+		out, err := codec.Marshal(respBuf, &medusav1.DigestResponse{Match: match})
+		return medusav1.MessageType_MESSAGE_TYPE_DIGEST_RESPONSE, out, err
 
 	default:
 		return 0, respBuf, fmt.Errorf("imap: unhandled message type %v", reqType)

@@ -582,6 +582,106 @@ func (x *Snapshot) GetEntries() []*SnapshotEntry {
 	return nil
 }
 
+// DigestRequest carries an owner's content digest for a partition so a backup
+// can decide, without transferring data, whether it is already in sync. Used by
+// active anti-entropy to skip re-pushing partitions whose replica already
+// matches.
+type DigestRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Partition     uint32                 `protobuf:"varint,1,opt,name=partition,proto3" json:"partition,omitempty"`
+	Digest        uint64                 `protobuf:"varint,2,opt,name=digest,proto3" json:"digest,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DigestRequest) Reset() {
+	*x = DigestRequest{}
+	mi := &file_medusa_v1_map_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DigestRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DigestRequest) ProtoMessage() {}
+
+func (x *DigestRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_medusa_v1_map_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DigestRequest.ProtoReflect.Descriptor instead.
+func (*DigestRequest) Descriptor() ([]byte, []int) {
+	return file_medusa_v1_map_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *DigestRequest) GetPartition() uint32 {
+	if x != nil {
+		return x.Partition
+	}
+	return 0
+}
+
+func (x *DigestRequest) GetDigest() uint64 {
+	if x != nil {
+		return x.Digest
+	}
+	return 0
+}
+
+type DigestResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Match         bool                   `protobuf:"varint,1,opt,name=match,proto3" json:"match,omitempty"` // true if the backup's digest for the partition equals the owner's
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DigestResponse) Reset() {
+	*x = DigestResponse{}
+	mi := &file_medusa_v1_map_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DigestResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DigestResponse) ProtoMessage() {}
+
+func (x *DigestResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_medusa_v1_map_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DigestResponse.ProtoReflect.Descriptor instead.
+func (*DigestResponse) Descriptor() ([]byte, []int) {
+	return file_medusa_v1_map_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *DigestResponse) GetMatch() bool {
+	if x != nil {
+		return x.Match
+	}
+	return false
+}
+
 var File_medusa_v1_map_proto protoreflect.FileDescriptor
 
 const file_medusa_v1_map_proto_rawDesc = "" +
@@ -622,7 +722,12 @@ const file_medusa_v1_map_proto_rawDesc = "" +
 	"\x05value\x18\x03 \x01(\fR\x05value\x12\x1b\n" +
 	"\texpire_at\x18\x04 \x01(\x03R\bexpireAt\">\n" +
 	"\bSnapshot\x122\n" +
-	"\aentries\x18\x01 \x03(\v2\x18.medusa.v1.SnapshotEntryR\aentriesB\x98\x01\n" +
+	"\aentries\x18\x01 \x03(\v2\x18.medusa.v1.SnapshotEntryR\aentries\"E\n" +
+	"\rDigestRequest\x12\x1c\n" +
+	"\tpartition\x18\x01 \x01(\rR\tpartition\x12\x16\n" +
+	"\x06digest\x18\x02 \x01(\x04R\x06digest\"&\n" +
+	"\x0eDigestResponse\x12\x14\n" +
+	"\x05match\x18\x01 \x01(\bR\x05matchB\x98\x01\n" +
 	"\rcom.medusa.v1B\bMapProtoP\x01Z8github.com/lodgvideon/medusa/genproto/medusa/v1;medusav1\xa2\x02\x03MXX\xaa\x02\tMedusa.V1\xca\x02\tMedusa\\V1\xe2\x02\x15Medusa\\V1\\GPBMetadata\xea\x02\n" +
 	"Medusa::V1b\x06proto3"
 
@@ -638,7 +743,7 @@ func file_medusa_v1_map_proto_rawDescGZIP() []byte {
 	return file_medusa_v1_map_proto_rawDescData
 }
 
-var file_medusa_v1_map_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_medusa_v1_map_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_medusa_v1_map_proto_goTypes = []any{
 	(*PutRequest)(nil),      // 0: medusa.v1.PutRequest
 	(*PutResponse)(nil),     // 1: medusa.v1.PutResponse
@@ -650,6 +755,8 @@ var file_medusa_v1_map_proto_goTypes = []any{
 	(*ExecuteResponse)(nil), // 7: medusa.v1.ExecuteResponse
 	(*SnapshotEntry)(nil),   // 8: medusa.v1.SnapshotEntry
 	(*Snapshot)(nil),        // 9: medusa.v1.Snapshot
+	(*DigestRequest)(nil),   // 10: medusa.v1.DigestRequest
+	(*DigestResponse)(nil),  // 11: medusa.v1.DigestResponse
 }
 var file_medusa_v1_map_proto_depIdxs = []int32{
 	8, // 0: medusa.v1.Snapshot.entries:type_name -> medusa.v1.SnapshotEntry
@@ -671,7 +778,7 @@ func file_medusa_v1_map_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_medusa_v1_map_proto_rawDesc), len(file_medusa_v1_map_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

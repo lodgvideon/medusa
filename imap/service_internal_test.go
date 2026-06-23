@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/lodgvideon/medusa/cluster"
 	medusav1 "github.com/lodgvideon/medusa/genproto/medusa/v1"
@@ -175,6 +176,54 @@ func TestSyncBackupsHealsDivergentBackup(t *testing.T) {
 	}
 	if v, ok := b.store.get(p, "m", key); !ok || string(v) != "v" {
 		t.Fatalf("backup not healed: got %q,%v want \"v\",true", v, ok)
+	}
+}
+
+// TestPartitionDigest covers the digest's defining properties: equal content
+// (regardless of expiry) hashes equally; a different value or an extra key
+// changes it; an empty partition is zero.
+func TestPartitionDigest(t *testing.T) {
+	key := []byte("k")
+	p := partition.For(key)
+
+	future1 := nowNano() + int64(time.Hour)
+	future2 := nowNano() + int64(2*time.Hour)
+	a := newStore()
+	a.put(p, "m", key, []byte("v"), future1)
+	b := newStore()
+	b.put(p, "m", key, []byte("v"), future2) // same value, different (still-valid) expiry
+
+	if a.partitionDigest(p) != b.partitionDigest(p) {
+		t.Fatal("digest must ignore expireAt for the same value")
+	}
+	if newStore().partitionDigest(p) != 0 {
+		t.Fatal("empty partition digest must be 0")
+	}
+
+	diff := newStore()
+	diff.put(p, "m", key, []byte("OTHER"), 0)
+	if a.partitionDigest(p) == diff.partitionDigest(p) {
+		t.Fatal("digest must differ for a different value")
+	}
+
+	a.put(p, "m", []byte("k2"), []byte("v2"), 0) // extra key
+	if a.partitionDigest(p) == b.partitionDigest(p) {
+		t.Fatal("digest must differ when one side has an extra key")
+	}
+}
+
+// TestSyncBackupsSkipsInSyncBackup verifies the digest gate: when the backup
+// already holds identical content, the owner sends no data (pushed == 0).
+func TestSyncBackupsSkipsInSyncBackup(t *testing.T) {
+	a, b, aMem := twoNodeServices(t)
+	tbl := aMem.Table()
+	p, key := ownedByAWithBackupB(t, tbl)
+
+	a.store.put(p, "m", key, []byte("v"), 0)
+	b.store.put(p, "m", key, []byte("v"), 0) // backup already in sync
+
+	if pushed, _ := a.SyncBackups(context.Background(), tbl, p, 1); pushed != 0 {
+		t.Fatalf("in-sync backup must not be pushed to; pushed %d", pushed)
 	}
 }
 

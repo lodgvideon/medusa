@@ -64,3 +64,16 @@ message SnapshotEntry {
 message Snapshot {
   repeated SnapshotEntry entries = 1;
 }
+
+// DigestRequest carries an owner's content digest for a partition so a backup
+// can decide, without transferring data, whether it is already in sync. Used by
+// active anti-entropy to skip re-pushing partitions whose replica already
+// matches.
+message DigestRequest {
+  uint32 partition = 1;
+  uint64 digest = 2;
+}
+
+message DigestResponse {
+  bool match = 1; // true if the backup's digest for the partition equals the owner's
+}

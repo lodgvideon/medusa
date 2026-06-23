@@ -136,6 +136,51 @@ func (s *store) snapshotPartition(p int) []entry {
 	return out
 }
 
+// partitionDigest returns an order-independent content hash of partition p's
+// live entries: the XOR of a per-entry FNV-1a hash over (mapName, key, value).
+// Two replicas holding the same set of (map,key,value) triples produce the same
+// digest, so anti-entropy can detect divergence without transferring data.
+//
+// Expiry is intentionally excluded: replicas derive a fresh absolute expireAt
+// from the remaining TTL at the instant each receives the write, so it legitimately
+// differs for the same logical entry — including it would make in-sync replicas
+// look diverged. A clock-skew-bounded TTL bucket could be added later if needed.
+func (s *store) partitionDigest(p int) uint64 {
+	now := nowNano()
+	sh := &s.shards[p]
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+	var digest uint64
+	for name, inner := range sh.m {
+		for k, v := range inner {
+			if v.expired(now) {
+				continue
+			}
+			h := fnv1a(fnvOffset64, []byte(name))
+			h = fnv1a(h, []byte{0}) // separator: avoid (name|key) vs (name'|key') collisions
+			h = fnv1a(h, []byte(k))
+			h = fnv1a(h, []byte{0})
+			h = fnv1a(h, v.data)
+			digest ^= h
+		}
+	}
+	return digest
+}
+
+// fnv1a is an allocation-free FNV-1a 64-bit hash step (no hash.Hash wrapper).
+const (
+	fnvOffset64 = 14695981039346656037
+	fnvPrime64  = 1099511628211
+)
+
+func fnv1a(h uint64, b []byte) uint64 {
+	for _, c := range b {
+		h ^= uint64(c)
+		h *= fnvPrime64
+	}
+	return h
+}
+
 // snapshotAll returns a copy of every live entry across all partitions, for
 // persistence.
 func (s *store) snapshotAll() []entry {
