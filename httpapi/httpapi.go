@@ -43,6 +43,8 @@ func WithToken(token string) Option {
 //	GET    /stats                    JSON {members, localEntries, backups}
 //	GET    /members                  JSON array of cluster members
 //	GET    /v1/maps/{map}            cluster-wide live entry count for the map
+//	                                 (502 + X-Medusa-Partial-Count header if a
+//	                                 member is unreachable — count is a lower bound)
 //	GET    /v1/maps/{map}/{key}      fetch a value (404 if absent)
 //	PUT    /v1/maps/{map}/{key}      store the request body as the value
 //	DELETE /v1/maps/{map}/{key}      remove a key (404 if absent)
@@ -97,7 +99,11 @@ func New(node *medusa.Node, opts ...Option) http.Handler {
 	mux.HandleFunc("GET /v1/maps/{map}", func(w http.ResponseWriter, r *http.Request) {
 		n, err := node.Map(r.PathValue("map")).Size(r.Context())
 		if err != nil {
-			// A member was unreachable, so the count would be only a lower bound.
+			// A member was unreachable, so n is only a lower bound over the
+			// reachable members. Signal the degraded state with 502, but expose the
+			// partial count in a header rather than discarding it — mirroring the
+			// Go API's (lower-bound, error) contract.
+			w.Header().Set("X-Medusa-Partial-Count", strconv.FormatUint(n, 10))
 			writeText(w, http.StatusBadGateway, err.Error())
 			return
 		}
