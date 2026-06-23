@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -197,6 +198,58 @@ func TestWALReplaySkipsCorruptRecord(t *testing.T) {
 	}
 	if len(got) != 1 || got["a"] != "1" {
 		t.Fatalf("replay past corrupt record = %v, want {a:1}", got)
+	}
+}
+
+// TestWALReplayRejectsOversizedRecord is the regression guard for the unbounded
+// allocation found by the deep review: replay decoded a record's length and
+// immediately did make([]byte, n) with no upper bound, so a corrupt or bit-
+// flipped length field (e.g. 0xFFFFFFFF ≈ 4 GiB) could OOM-kill or panic the node
+// on the very startup path it most needs to finish. Replay now caps the length
+// at maxWALRecord and treats anything larger as a torn header, stopping cleanly.
+// We assert both the clean stop (the valid record before it survives) and, via
+// cumulative allocation, that no multi-gigabyte buffer was allocated — the latter
+// is what fails if the cap is ever removed, even on a 64-bit host where the make
+// would otherwise transiently succeed.
+func TestWALReplayRejectsOversizedRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+	w, err := openWAL(path)
+	if err != nil {
+		t.Fatalf("open wal: %v", err)
+	}
+	if err := w.appendPut("m", []byte("a"), []byte("1"), 0); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := w.close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	// Append a header declaring a ~4 GiB payload — a corrupt/bit-flipped length.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if _, err := f.Write([]byte{0xff, 0xff, 0xff, 0xff, walOpPut}); err != nil {
+		t.Fatalf("write oversized header: %v", err)
+	}
+	_ = f.Close()
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	got := map[string]string{}
+	if _, err := replayWAL(path,
+		func(_ string, k, v []byte, _ int64) { got[string(k)] = string(v) },
+		func(_ string, k []byte) { delete(got, string(k)) },
+		func(_ string) { clear(got) },
+	); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	runtime.ReadMemStats(&after)
+
+	if len(got) != 1 || got["a"] != "1" {
+		t.Fatalf("replay past oversized record = %v, want {a:1}", got)
+	}
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 1<<30 {
+		t.Fatalf("replay allocated %d bytes for an oversized record; the length cap is missing", grew)
 	}
 }
 

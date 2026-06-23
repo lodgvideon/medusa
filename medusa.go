@@ -274,15 +274,28 @@ func (n *Node) maintain(ctx context.Context, interval time.Duration) {
 			// evicted), move the data that this node no longer owns to its new
 			// holders.
 			if v := n.mem.TableVersion(); v != n.lastMigratedVersion {
-				n.maps.Migrate(ctx, n.mem.Table())
-				n.lastMigratedVersion = v
-				metrics.Migrations.Add(1)
-				n.log.Info("rebalanced partitions", "tableVersion", v, "members", len(n.mem.Members()))
-				// A rebalance dropped partitions, so the snapshot+WAL must be
-				// checkpointed before a crash could replay writes for partitions
-				// this node no longer owns. Flag it for the unified checkpoint
-				// below, which keeps retrying every tick until it succeeds.
+				// Time-box the rebalance to one interval, like the anti-entropy push
+				// above, so a slow or unreachable holder can't freeze gossip and
+				// failure detection for the OS-level TCP timeout. A partial pass is
+				// idempotent; leave the version unadvanced so the next tick retries
+				// until a full pass completes (peers eventually become reachable, or
+				// the table changes again and supersedes this one).
+				migrateCtx, cancel := context.WithTimeout(ctx, interval)
+				done := n.maps.Migrate(migrateCtx, n.mem.Table())
+				cancel()
+				// A rebalance — even a partial one — may have dropped partitions, so
+				// the snapshot+WAL must be checkpointed before a crash could replay
+				// writes for partitions this node no longer owns. Flag it for the
+				// unified checkpoint below, which keeps retrying every tick until it
+				// succeeds.
 				n.checkpointDue = true
+				if done {
+					n.lastMigratedVersion = v
+					metrics.Migrations.Add(1)
+					n.log.Info("rebalanced partitions", "tableVersion", v, "members", len(n.mem.Members()))
+				} else {
+					n.log.Warn("rebalance time-boxed, will retry next tick", "tableVersion", v)
+				}
 			}
 			// Reclaim expired entries (lazy expiry already hides them on read).
 			if swept := n.maps.SweepExpired(); swept > 0 {

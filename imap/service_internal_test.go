@@ -514,6 +514,73 @@ func TestEvictEnforcesCap(t *testing.T) {
 	}
 }
 
+// TestMigrateDropWALAtomicUnderConcurrentPut is the regression guard for the
+// hand-off WAL-ordering bug found by the deep review: the drop mutated the store
+// under the shard lock and recorded the removal in a separate WAL critical
+// section, so a put for a just-dropped key could slip its [PUT] into the WAL
+// between the drop and the [REMOVE]. Replay then applied [PUT][REMOVE] and lost
+// the acknowledged write while the live store kept it. dropMigratedLogged now
+// holds the WAL lock across both, so the WAL order can never diverge from the
+// store order — replay must always reconstruct the live state.
+func TestMigrateDropWALAtomicUnderConcurrentPut(t *testing.T) {
+	dir := t.TempDir()
+	key := []byte("k")
+	p := partition.For(key)
+	ctx := context.Background()
+
+	for r := 0; r < 300; r++ {
+		path := filepath.Join(dir, "mig"+strconv.Itoa(r)+".log")
+		s := svcWith(&fakeTransport{})
+		if err := s.OpenWAL(path); err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		// Seed the key, then snapshot the partition — this is what a hand-off drops.
+		if _, err := s.applyPut(ctx, "m", key, []byte("v0"), 0, true); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		entries := s.store.snapshotPartition(p)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		// A put for the same key, racing the hand-off drop + its WAL record.
+		go func() { defer wg.Done(); _, _ = s.applyPut(ctx, "m", key, []byte("v1"), 0, true) }()
+		go func() { defer wg.Done(); s.dropMigratedLogged(p, entries) }()
+		wg.Wait()
+
+		lv, lok := s.store.get(p, "m", key)
+		_ = s.CloseWAL()
+
+		s2 := svcWith(&fakeTransport{})
+		if err := s2.OpenWAL(path); err != nil {
+			t.Fatalf("reopen: %v", err)
+		}
+		rv, rok := s2.store.get(p, "m", key)
+		_ = s2.CloseWAL()
+		if lok != rok || string(lv) != string(rv) {
+			t.Fatalf("round %d: live=(%q,%v) replay=(%q,%v): hand-off WAL order diverged from store order", r, lv, lok, rv, rok)
+		}
+	}
+}
+
+// TestMigrateReportsCompletionAndHonorsContext proves Migrate is time-boxable:
+// it returns false on a cancelled context (an incomplete pass, so the maintenance
+// loop leaves the table version unadvanced and retries) and true on a full pass.
+// This is what lets the loop bound a rebalance to one interval without freezing
+// gossip and failure detection on a slow or unreachable peer.
+func TestMigrateReportsCompletionAndHonorsContext(t *testing.T) {
+	s := svcWith(&fakeTransport{})
+	s.store.put(partition.For([]byte("k")), "m", []byte("k"), []byte("v"), 0)
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if s.Migrate(cancelled, partition.NewTable([]string{"self"}, 1)) {
+		t.Fatal("Migrate on a cancelled context must report an incomplete pass (false)")
+	}
+	if !s.Migrate(context.Background(), partition.NewTable([]string{"self"}, 1)) {
+		t.Fatal("Migrate over a fully-owned table must report a complete pass (true)")
+	}
+}
+
 func TestHandleRejectsCorruptPayload(t *testing.T) {
 	svc := svcWith(&fakeTransport{})
 	bad := []byte{0xff, 0xff, 0xff} // not a valid protobuf message

@@ -36,6 +36,15 @@ const (
 	walOpClear  byte = 3 // remove every entry for a map (payload: SnapshotEntry with only Map set)
 )
 
+// maxWALRecord caps the declared payload length of a single record before it is
+// allocated on replay. A larger length is treated as a torn or corrupt header
+// (e.g. a bit-flipped length field, or a length flushed without its payload) and
+// stops replay cleanly — rather than driving an unbounded make([]byte, n) that
+// could OOM-kill or panic the node on the very startup path it most needs to
+// finish. It is well above any real record: values arrive over the transport,
+// itself capped at 64 MiB per frame, so a SnapshotEntry never approaches this.
+const maxWALRecord = 128 << 20 // 128 MiB
+
 // openWAL opens (creating if needed) the log at path and positions the write
 // offset at the end so new records append after any existing ones. We do not
 // use O_APPEND: all writes are serialized under w.mu (so atomic-append is
@@ -60,6 +69,13 @@ func (w *wal) appendPut(name string, key, value []byte, expireAt int64) error {
 
 func (w *wal) appendRemove(name string, key []byte) error {
 	return w.append(walOpRemove, &medusav1.SnapshotEntry{Map: name, Key: key})
+}
+
+// appendRemoveLocked is appendRemove without taking w.mu — the caller must
+// already hold it (see Service.dropMigratedLogged, which holds w.mu across a
+// store drop and its remove records so the two cannot diverge under a crash).
+func (w *wal) appendRemoveLocked(name string, key []byte) error {
+	return w.appendLocked(walOpRemove, &medusav1.SnapshotEntry{Map: name, Key: key})
 }
 
 // append frames and writes one record, then fsyncs so the write is durable
@@ -153,6 +169,9 @@ func replayWAL(path string, put func(name string, key, value []byte, expireAt in
 			return valid, nil // clean EOF or torn header: end of the usable log
 		}
 		n := binary.BigEndian.Uint32(hdr[:4])
+		if n > maxWALRecord {
+			return valid, nil // implausible length: torn or corrupt header, stop here
+		}
 		op := hdr[4]
 		payload := make([]byte, n)
 		if _, err := io.ReadFull(r, payload); err != nil {

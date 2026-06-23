@@ -57,6 +57,37 @@ func (s *Service) logged(mutate func(), record func() error) error {
 	return record()
 }
 
+// dropMigratedLogged drops the entries this node handed off and records the
+// deletions in the WAL as one atomic unit, mirroring logged(): the WAL lock is
+// held across BOTH the store drop and its WAL records, so the store-apply order
+// equals the WAL order across the hand-off. That closes two crash hazards a
+// split drop-then-append would open:
+//   - a concurrent put for a just-dropped key cannot slip its [PUT] into the WAL
+//     between the drop and the [REMOVE] recorded here — which replay would apply
+//     as [PUT][REMOVE], silently losing an acknowledged write;
+//   - the drop and its record cannot straddle a crash with the key gone from the
+//     store but absent from the WAL, which replay of the pre-drop snapshot would
+//     resurrect for a partition this node no longer owns.
+//
+// dropMigrated returns only the entries actually removed (unchanged since the
+// snapshot under the shard lock), so a write that raced the drop is neither
+// wiped nor recorded as removed. A WAL append error stops the rest; the
+// post-rebalance checkpoint is the durability backstop. The lock order is the
+// same w.mu → shard.mu nesting logged() and Checkpoint use, so it cannot deadlock.
+func (s *Service) dropMigratedLogged(p int, entries []entry) {
+	if s.wal == nil {
+		s.store.dropMigrated(p, entries)
+		return
+	}
+	s.wal.mu.Lock()
+	defer s.wal.mu.Unlock()
+	for _, e := range s.store.dropMigrated(p, entries) {
+		if err := s.wal.appendRemoveLocked(e.mapName, []byte(e.key)); err != nil {
+			break
+		}
+	}
+}
+
 // applyPut writes locally as the partition owner and, unless this is itself a
 // backup write, replicates to the partition's backup. It returns whether the
 // key was newly created. The store mutation and its WAL record are applied
@@ -323,8 +354,17 @@ func (s *Service) sendExecute(ctx context.Context, addr, name string, key []byte
 // succeeds — so a failed push leaves the data in place to be retried on the
 // next membership change. Triggered when the partition table changes (a node
 // joining or leaving), it is what makes ownership and data move together.
-func (s *Service) Migrate(ctx context.Context, table *partition.Table) {
+//
+// It honours ctx: on cancellation or deadline it stops between partitions and
+// returns false (an incomplete pass). A full pass returns true. The caller can
+// time-box it so a slow or unreachable peer cannot freeze the maintenance loop,
+// and retry on the next tick (the partial work done is idempotent) until a pass
+// completes.
+func (s *Service) Migrate(ctx context.Context, table *partition.Table) bool {
 	for p := 0; p < partition.Count; p++ {
+		if ctx.Err() != nil {
+			return false // time-boxed or cancelled mid-pass; caller retries
+		}
 		entries := s.store.snapshotPartition(p)
 		if len(entries) == 0 {
 			continue
@@ -370,23 +410,15 @@ func (s *Service) Migrate(ctx context.Context, table *partition.Table) {
 		}
 		if !selfHolds && pushedOK {
 			// Drop only the entries we actually migrated and that are unchanged —
-			// never a blanket wipe — so a write that raced this migration survives.
-			dropped := s.store.dropMigrated(p, entries)
-			// Record the hand-off deletions in the WAL so a crash before the next
-			// checkpoint cannot replay the pre-drop snapshot and resurrect entries
-			// for a partition this node no longer owns. Idempotent on replay
-			// (removing an absent key is a no-op); the post-rebalance checkpoint is
-			// the backstop if a WAL append fails. (A batched append could cut the
-			// per-entry fsync cost on very large rebalances — see the roadmap.)
-			if s.wal != nil {
-				for _, e := range dropped {
-					if err := s.wal.appendRemove(e.mapName, []byte(e.key)); err != nil {
-						break
-					}
-				}
-			}
+			// never a blanket wipe — so a write that raced this migration survives,
+			// and record the deletions in the WAL atomically with the drop so a
+			// crash can neither lose a racing write nor resurrect handed-off data
+			// (see dropMigratedLogged). The post-rebalance checkpoint folds these
+			// remove records into the snapshot and is the backstop on WAL failure.
+			s.dropMigratedLogged(p, entries)
 		}
 	}
+	return true
 }
 
 // SyncBackups is active anti-entropy: it re-pushes the entries of the partitions

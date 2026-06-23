@@ -78,7 +78,12 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   `medusa_entries_reconciled_total` metric counts the re-pushed entries.
 - **Elastic scaling** — when a node joins, the partitions it now owns migrate to
   it automatically (verified in k8s: scaling 3→5 redistributes data and the new
-  pods serve their share).
+  pods serve their share). Each rebalance is time-boxed to one maintenance
+  interval so a slow or unreachable peer can't freeze gossip and failure
+  detection; an incomplete pass retries on the next tick (the hand-off is
+  idempotent), and a node drops the data it hands off only after recording the
+  removal in its WAL atomically with the drop — so a crash mid-rebalance neither
+  loses a racing write nor resurrects handed-off data.
 - **Zero-data-loss rolling restart** — on SIGTERM a node hands off its partitions
   and announces its departure before exiting, so peers rebalance with the data
   already in place (verified in k8s: a rolling restart of all 3 pods preserves

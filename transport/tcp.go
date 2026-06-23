@@ -131,7 +131,7 @@ func (t *tcpTransport) Send(ctx context.Context, addr string, reqType medusav1.M
 	if err := ctx.Err(); err != nil {
 		return 0, dst, err
 	}
-	cc, err := t.getConn(addr)
+	cc, err := t.getConn(ctx, addr)
 	if err != nil {
 		return 0, dst, err
 	}
@@ -163,7 +163,7 @@ func (t *tcpTransport) Send(ctx context.Context, addr string, reqType medusav1.M
 	return respType, dst, nil
 }
 
-func (t *tcpTransport) getConn(addr string) (*clientConn, error) {
+func (t *tcpTransport) getConn(ctx context.Context, addr string) (*clientConn, error) {
 	t.mu.Lock()
 	if t.closed {
 		t.mu.Unlock()
@@ -182,7 +182,12 @@ func (t *tcpTransport) getConn(addr string) (*clientConn, error) {
 	default:
 	}
 
-	c, err := net.Dial("tcp", addr)
+	// Dial with the context so a caller's deadline bounds the connect: without it
+	// a dial to an unreachable peer blocks for the OS-level TCP timeout (~130s),
+	// which would freeze a time-boxed caller like the rebalance loop well past its
+	// budget. Reads/writes are already bounded by SetDeadline in Send.
+	var d net.Dialer
+	c, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
