@@ -131,12 +131,19 @@ func TestPoseidonMegabyteRequest(t *testing.T) {
 		return medusav1.MessageType_MESSAGE_TYPE_PUT_RESPONSE, nil, nil // ack only
 	}
 	cli, addr := poseidonPair(t, drain)
-	payload := bytes.Repeat([]byte("v"), 1<<20) // 1 MiB
 
-	perAttempt := 8 * time.Second
+	// 1 MiB normally. Under the race detector the whole HTTP/2 stack (HPACK,
+	// 16 KiB framing, window accounting) runs 10–20× slower, so a 1 MiB transfer
+	// can blow the deadline on a loaded CI runner. 256 KiB still proves the
+	// property — 16 KiB chunking yields 16 DATA frames and several connection-
+	// window refunds past the 32 KiB threshold — while transferring fast enough
+	// to be reliable. (The stream window is 16 MiB, so neither size reaches the
+	// separate ≥16 MiB mid-stream-refund regime, which is not what this asserts.)
+	size, perAttempt := 1<<20, 8*time.Second
 	if raceEnabled {
-		perAttempt = 40 * time.Second
+		size, perAttempt = 256<<10, 40*time.Second
 	}
+	payload := bytes.Repeat([]byte("v"), size)
 
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
