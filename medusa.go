@@ -60,6 +60,7 @@ type Node struct {
 	closeOnce           sync.Once
 	lastMigratedVersion uint64
 	lastSaveNano        int64
+	checkpointDue       bool // a rebalance dropped partitions (or a checkpoint failed): checkpoint ASAP
 }
 
 // Config configures a Node.
@@ -222,32 +223,25 @@ func (n *Node) maintain(ctx context.Context, interval time.Duration) {
 				n.lastMigratedVersion = v
 				metrics.Migrations.Add(1)
 				n.log.Info("rebalanced partitions", "tableVersion", v, "members", len(n.mem.Members()))
-				// Checkpoint immediately after a rebalance so the snapshot and WAL
-				// reflect the dropped partitions; otherwise a crash before the next
-				// periodic snapshot would replay writes for partitions this node no
-				// longer owns and could re-push that stale data on rejoin.
-				if n.dataDir != "" {
-					if err := n.saveSnapshot(); err != nil {
-						// Leave lastSaveNano unchanged so the periodic path retries
-						// on the next tick rather than waiting a full interval — the
-						// WAL still holds records for the dropped partitions until a
-						// checkpoint succeeds.
-						n.log.Warn("post-rebalance snapshot failed", "err", err)
-					} else {
-						n.lastSaveNano = time.Now().UnixNano()
-					}
-				}
+				// A rebalance dropped partitions, so the snapshot+WAL must be
+				// checkpointed before a crash could replay writes for partitions
+				// this node no longer owns. Flag it for the unified checkpoint
+				// below, which keeps retrying every tick until it succeeds.
+				n.checkpointDue = true
 			}
 			// Reclaim expired entries (lazy expiry already hides them on read).
 			if swept := n.maps.SweepExpired(); swept > 0 {
 				metrics.Swept.Add(int64(swept))
 			}
-			// Persist a snapshot at the configured interval.
-			if n.dataDir != "" && time.Now().UnixNano()-n.lastSaveNano > int64(snapshotInterval) {
+			// Checkpoint when one is due (post-rebalance or a prior failure) or the
+			// periodic interval elapsed. On failure checkpointDue stays set, so the
+			// next tick retries promptly rather than waiting a full interval.
+			if n.dataDir != "" && (n.checkpointDue || time.Now().UnixNano()-n.lastSaveNano > int64(snapshotInterval)) {
 				if err := n.saveSnapshot(); err != nil {
-					n.log.Warn("snapshot save failed", "err", err) // retry next tick
+					n.log.Warn("snapshot save failed", "err", err)
 				} else {
 					n.lastSaveNano = time.Now().UnixNano()
+					n.checkpointDue = false
 				}
 			}
 		}

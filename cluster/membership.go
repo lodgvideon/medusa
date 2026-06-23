@@ -321,10 +321,16 @@ func (m *Membership) DetectFailures(ctx context.Context, threshold uint8) []stri
 		if err := m.Ping(ctx, peer.Addr); err != nil {
 			// Increment, test the threshold, and evict as one critical section so
 			// a concurrent rejoin cannot slip between the decision and the removal.
+			// Only touch misses while the peer is still a member: a concurrent
+			// path (e.g. a LEAVE) may have evicted it after the Members snapshot,
+			// and incrementing then would orphan a misses entry that removeLocked
+			// (returning false for an absent member) never cleans up.
 			m.mu.Lock()
-			m.misses[peer.ID]++
-			if m.misses[peer.ID] >= threshold && m.removeLocked(peer.ID) {
-				evicted = append(evicted, peer.ID)
+			if _, ok := m.members[peer.ID]; ok {
+				m.misses[peer.ID]++
+				if m.misses[peer.ID] >= threshold && m.removeLocked(peer.ID) {
+					evicted = append(evicted, peer.ID)
+				}
 			}
 			m.mu.Unlock()
 		} else {
