@@ -63,10 +63,10 @@ func (s *Server) handleHTTP1Upgrade(ctx context.Context, nc net.Conn, br *bufio.
 	if !strings.EqualFold(req.Header.Get("Upgrade"), "h2c") &&
 		!strings.EqualFold(req.Header.Get("Upgrade"), "h2") {
 		// Not an upgrade request — respond 400.
-		resp := fmt.Sprintf("HTTP/1.1 400 Bad Request\r\n" +
-			"Content-Type: text/plain\r\n" +
-			"Connection: close\r\n" +
-			"Content-Length: 19\r\n\r\n" +
+		resp := fmt.Sprintf("HTTP/1.1 400 Bad Request\r\n"+
+			"Content-Type: text/plain\r\n"+
+			"Connection: close\r\n"+
+			"Content-Length: 19\r\n\r\n"+
 			"Only h2c supported\n")
 		_, _ = nc.Write([]byte(resp))
 		_ = nc.Close()

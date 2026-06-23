@@ -24,7 +24,7 @@ func newHarness() *harness {
 func (h *harness) node(t *testing.T, id string) *cluster.Membership {
 	t.Helper()
 	tr := h.sw.NewTransport(id)
-	mem := cluster.New(cluster.Member{ID: id, Addr: id}, tr)
+	mem := cluster.New(cluster.Member{ID: id, Addr: id}, tr, 1)
 	if err := tr.Listen(mem.Handle); err != nil {
 		t.Fatalf("Listen(%s): %v", id, err)
 	}

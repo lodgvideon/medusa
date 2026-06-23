@@ -6,21 +6,20 @@ A small, **zero-allocation-oriented distributed in-memory data grid** in Go — 
 Hazelcast-style cluster of nodes that together host partitioned, replicated maps
 and talk to each other over **protobuf**.
 
-Built test-first, with a 90%+ coverage gate and allocation assertions baked into
-the test suite.
+Built test-first, with a ≥90% coverage gate on the hand-written packages and
+allocation assertions baked into the test suite.
 
 ```
-package        coverage     hot-path benchmark
-─────────────  ─────────    ─────────────────────────────────────────
-medusa            100.0%    BenchmarkMarshal      7.3 ns/op  0 allocs/op
-partition         100.0%    BenchmarkMapGetLocal 22.8 ns/op  0 allocs/op
-imap               93.8%
-transport          92.3%
-cluster            92.4%
-codec              91.7%
-─────────────  ─────────
-total (src)        93.5%    (excludes generated genproto/)
+metric                                       value
+───────────────────────────────────────     ──────────────────────────────
+coverage (hand-written packages)             91.0%   0 allocs/op on hot paths
+BenchmarkMarshal      (encode, warm buffer)   7.1 ns/op   0 allocs/op
+BenchmarkMapGetLocal  (local owned read)     27.8 ns/op   0 allocs/op
 ```
+
+Coverage is measured with `go test -coverpkg=./...` so cross-package exercise
+counts (e.g. the migration paths driven from the top-level integration tests),
+excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
 
 ## What it does
 
@@ -33,9 +32,11 @@ total (src)        93.5%    (excludes generated genproto/)
   has no lost updates under concurrency — no data movement, one round trip.
   Built-ins: `incr`, `append`, `getset`, `delete`; register your own. Also over
   HTTP: `POST /v1/maps/{m}/{k}/execute?proc=incr`.
-- **Replication** — every write is copied to one backup owner, so a single node
-  failure loses no data. Reads and writes transparently fail over to the backup
-  when the primary is unreachable.
+- **Replication (configurable factor)** — every write is synchronously copied to
+  `Backups` distinct backup owners (default 1; env `MEDUSA_BACKUPS`). A cluster
+  tolerates that many simultaneous holder failures with no data loss; reads and
+  writes transparently fail over to a backup when the primary is unreachable.
+  The factor is capped to however many distinct backups the cluster can supply.
 - **Elastic scaling** — when a node joins, the partitions it now owns migrate to
   it automatically (verified in k8s: scaling 3→5 redistributes data and the new
   pods serve their share).
@@ -218,8 +219,9 @@ a `docker build` on every push and pull request.
 A 3-node cluster ships in [`k8s/medusa.yaml`](k8s/medusa.yaml) (headless Service
 for peer DNS, ClusterIP Service for the admin API, StatefulSet with health
 probes). The node binary is `cmd/medusa-node`, configured via env
-(`MEDUSA_ID`, `MEDUSA_ADDR`, `MEDUSA_SEEDS`); nodes self-assemble via a
-background maintenance loop that retries joining until the cluster converges.
+(`MEDUSA_ID`, `MEDUSA_ADDR`, `MEDUSA_SEEDS`, `MEDUSA_BACKUPS`, `MEDUSA_DATA_DIR`);
+nodes self-assemble via a background maintenance loop that retries joining until
+the cluster converges.
 
 ```bash
 docker build -t medusa:dev .
@@ -255,8 +257,11 @@ bash k8s/e2e.sh            # or: go test -tags k8s -run TestK8sE2E -timeout 15m 
 - **Round-robin partition assignment** (`owner = p mod n`, `backup = p+1 mod n`).
   Simplest scheme that keeps ownership balanced and backups distinct. Trade-off:
   a membership change reshuffles most partitions.
-- **One synchronous backup.** Tolerates a single node failure. No quorum, no
-  configurable replication factor yet.
+- **Configurable synchronous backups.** `Config.Backups` (default 1) sets how
+  many distinct peers each write is replicated to before the cluster keeps it,
+  so it tolerates that many simultaneous failures. Replication is synchronous
+  and fan-out style (no quorum, no read-repair yet); more backups cost
+  proportionally more write traffic and memory.
 - **Simple failure detector.** A single missed heartbeat evicts. Fine for small
   clusters and tests; a production detector needs N consecutive misses
   (phi-accrual) to ride out transient blips.
@@ -271,7 +276,8 @@ bash k8s/e2e.sh            # or: go test -tags k8s -run TestK8sE2E -timeout 15m 
 ### Roadmap
 
 - Rendezvous (HRW) partitioning to minimize data movement on membership change.
-- Configurable backup count + read-repair / anti-entropy for replicas.
+- Read-repair / anti-entropy to re-sync replicas that diverged during a failure
+  (the backup count itself is now configurable via `Config.Backups`).
 - Intern map names (or use integer map handles) to make the remote read path
   fully zero-alloc.
 - Phi-accrual failure detection with a background heartbeat loop.

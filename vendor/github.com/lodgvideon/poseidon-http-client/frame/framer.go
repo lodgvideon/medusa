@@ -94,12 +94,10 @@ func (f *Framer) Close() {
 // must independently respect the PEER's advertised value, which lives
 // outside the framer (callers track peer settings separately).
 func (f *Framer) SetMaxReadFrameSize(n uint32) { f.maxReadFrameSize = n }
-
 // SetMaxHeaderListSize sets the read-side cap on a header block.
 func (f *Framer) SetMaxHeaderListSize(n uint32) { f.maxHeaderListSize = n }
-
 // SetReadBuffer overrides the internal read buffer (useful for pooling).
-func (f *Framer) SetReadBuffer(buf []byte) { f.readBuf = buf }
+func (f *Framer) SetReadBuffer(buf []byte)      { f.readBuf = buf }
 
 // paddingZeros provides a constant zero buffer for padded writes.
 var paddingZeros [256]byte

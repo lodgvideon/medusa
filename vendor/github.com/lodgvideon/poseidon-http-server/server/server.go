@@ -135,7 +135,7 @@ type Server struct {
 	mu           sync.Mutex
 	closed       bool
 	shutdown     bool
-	listener     net.Listener
+	listeners    map[net.Listener]struct{} // listeners passed to Serve; closed by Close/Shutdown
 	conns        map[*conn.ServerConn]struct{}
 	closedStats  transportTotals // counters folded in from closed conns (guarded by mu)
 	inFlight     sync.WaitGroup  // active streams being served
@@ -179,6 +179,7 @@ func NewServer(opts Options) (*Server, error) {
 		opts:         opts,
 		maxBodyBytes: opts.resolveMaxBodyBytes(),
 		logger:       logger,
+		listeners:    make(map[net.Listener]struct{}),
 		conns:        make(map[*conn.ServerConn]struct{}),
 		done:         make(chan struct{}),
 		closeCh:      make(chan struct{}),
@@ -209,11 +210,36 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 // returning ErrServerClosed on clean shutdown. It takes ownership of ln.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	s.mu.Lock()
-	s.listener = ln
+	if s.closed {
+		// Already closed before Serve started; don't accept anything.
+		s.mu.Unlock()
+		_ = ln.Close()
+		return ErrServerClosed
+	}
+	s.listeners[ln] = struct{}{}
 	s.mu.Unlock()
+
+	// serveDone bounds the watcher goroutine to this Serve call's lifetime.
+	serveDone := make(chan struct{})
+	defer func() {
+		close(serveDone)
+		s.mu.Lock()
+		delete(s.listeners, ln)
+		s.mu.Unlock()
+	}()
+
+	// Watch for ctx cancellation (→ Close) and terminate on Close()/Shutdown()
+	// or when Serve returns. Selecting on closeCh/serveDone — not just ctx.Done()
+	// — means the watcher always exits: with ctx == context.Background(),
+	// ctx.Done() is a nil channel (never ready), so on its own this goroutine
+	// would block forever (a leak) after the server stops.
 	go func() {
-		<-ctx.Done()
-		_ = s.Close()
+		select {
+		case <-ctx.Done():
+			_ = s.Close()
+		case <-s.closeCh:
+		case <-serveDone:
+		}
 	}()
 	for {
 		nc, err := ln.Accept()
@@ -582,12 +608,13 @@ func (s *Server) TransportStats() TransportStats {
 	return ts
 }
 
-// Addr returns the listener address, or nil if not listening.
+// Addr returns a listener address, or nil if not listening. When multiple
+// listeners are served, an arbitrary one is returned.
 func (s *Server) Addr() net.Addr {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.listener != nil {
-		return s.listener.Addr()
+	for ln := range s.listeners {
+		return ln.Addr()
 	}
 	return nil
 }
@@ -603,8 +630,9 @@ func (s *Server) Close() error {
 	}
 	s.closed = true
 	close(s.closeCh)
-	if s.listener != nil {
-		_ = s.listener.Close()
+	for ln := range s.listeners {
+		_ = ln.Close()
+		delete(s.listeners, ln)
 	}
 	for sc := range s.conns {
 		_ = sc.Close()
@@ -635,9 +663,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.opts.OnDrainStart()
 	}
 
-	// Close listener — stop accepting new connections.
-	if s.listener != nil {
-		_ = s.listener.Close()
+	// Close listeners — stop accepting new connections.
+	for ln := range s.listeners {
+		_ = ln.Close()
+		delete(s.listeners, ln)
 	}
 	close(s.closeCh)
 

@@ -28,14 +28,18 @@ jobs:
         run: go build ./...
 
       # The race detector runs here (ubuntu runners have a C compiler), covering
-      # ground the dev machine cannot — it has no cgo toolchain.
+      # ground the dev machine cannot — it has no cgo toolchain. -coverpkg=./...
+      # so cross-package exercise (integration tests driving inner packages)
+      # counts toward each package's coverage.
       - name: test (race + coverage)
-        run: go test -race -count=1 -timeout 180s -coverprofile=coverage.out ./...
+        run: go test -race -count=1 -timeout 180s -coverpkg=./... -coverprofile=coverage.out ./...
 
-      - name: coverage (excluding generated code)
+      - name: coverage gate (>=90%, excluding generated code + cmd main)
         run: |
-          grep -v 'genproto/' coverage.out > coverage.src.out || true
-          go tool cover -func=coverage.src.out | tail -1
+          grep -vE 'genproto/|cmd/medusa-node/' coverage.out > coverage.src.out || true
+          total=$(go tool cover -func=coverage.src.out | awk '/^total:/ {print $NF}')
+          echo "hand-written coverage: $total"
+          awk -v p="${total%\%}" 'BEGIN { if (p+0 < 90.0) { print "below 90% gate"; exit 1 } }'
 
   docker:
     runs-on: ubuntu-latest

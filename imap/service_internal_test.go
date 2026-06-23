@@ -28,7 +28,7 @@ func (f *fakeTransport) Send(_ context.Context, _ string, _ medusav1.MessageType
 }
 
 func svcWith(tr transport.Transport) *Service {
-	mem := cluster.New(cluster.Member{ID: "self", Addr: "self"}, tr)
+	mem := cluster.New(cluster.Member{ID: "self", Addr: "self"}, tr, 1)
 	return NewService(mem, tr)
 }
 

@@ -10,9 +10,9 @@ gen: ## regenerate protobuf code from proto/
 test: ## run all tests
 	go test ./... -count=1 -timeout 60s
 
-cover: ## run tests with coverage, excluding generated code from the total
-	go test ./... -count=1 -coverprofile=coverage.out -timeout 60s
-	@grep -v "genproto" coverage.out > coverage.src.out || true
+cover: ## run tests with cross-package coverage, excluding generated + cmd main
+	go test ./... -count=1 -coverpkg=./... -coverprofile=coverage.out -timeout 120s
+	@grep -vE 'genproto/|cmd/medusa-node/' coverage.out > coverage.src.out || true
 	go tool cover -func=coverage.src.out | tail -1
 
 bench: ## run benchmarks (allocation-sensitive paths assert 0 allocs/op in tests)

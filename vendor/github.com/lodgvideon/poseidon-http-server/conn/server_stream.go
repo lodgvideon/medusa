@@ -22,11 +22,11 @@ type ServerStream struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu              sync.Mutex
-	localEnded      bool
-	remoteEnded     bool
-	closed          bool
-	headersSent     bool
+	mu            sync.Mutex
+	localEnded    bool
+	remoteEnded   bool
+	closed        bool
+	headersSent   bool
 	headersReceived bool
 	// priority stores the RFC 7540 §5.3 priority payload received in
 	// the first HEADERS frame (or set by PushWithPriority), if any.
@@ -36,9 +36,9 @@ type ServerStream struct {
 	priority atomic.Pointer[frame.Priority]
 
 	// Flow control.
-	recvWindow        int32
-	recvRefundPending uint32
-	sendWindow        int32
+	recvWindow         int32
+	recvRefundPending  uint32
+	sendWindow         int32
 }
 
 // Priority returns the RFC 7540 §5.3 priority payload extracted from
@@ -62,7 +62,7 @@ func (ss *ServerStream) setPriority(p *frame.Priority) {
 type StreamEventType uint8
 
 const (
-	EventHeaders StreamEventType = iota + 1
+	EventHeaders  StreamEventType = iota + 1
 	EventData
 	EventTrailers
 	EventReset

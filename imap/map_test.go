@@ -55,7 +55,7 @@ func newFixture() *fixture {
 func (f *fixture) add(t *testing.T, id string) *node {
 	t.Helper()
 	tr := f.sw.NewTransport(id)
-	mem := cluster.New(cluster.Member{ID: id, Addr: id}, tr)
+	mem := cluster.New(cluster.Member{ID: id, Addr: id}, tr, 1)
 	svc := imap.NewService(mem, tr)
 	if err := tr.Listen(dispatch(mem, svc)); err != nil {
 		t.Fatalf("Listen(%s): %v", id, err)
@@ -206,7 +206,7 @@ func TestReadFromBackupAfterOwnerCrash(t *testing.T) {
 func BenchmarkMapGetLocal(b *testing.B) {
 	sw := transport.NewSwitch()
 	tr := sw.NewTransport("a")
-	mem := cluster.New(cluster.Member{ID: "a", Addr: "a"}, tr)
+	mem := cluster.New(cluster.Member{ID: "a", Addr: "a"}, tr, 1)
 	svc := imap.NewService(mem, tr)
 	_ = tr.Listen(dispatch(mem, svc))
 	defer tr.Close()

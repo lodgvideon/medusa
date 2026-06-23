@@ -145,9 +145,11 @@ const defaultHandshakeTimeout = 10 * time.Second
 const rapidResetFloor = 100
 
 func (o ServerConnOptions) defaulted() ServerConnOptions {
-	if o.AdvertisedSettings.MaxConcurrentStreams == 0 {
-		o.AdvertisedSettings = o.AdvertisedSettings.defaulted()
-	}
+	// Always fully default the advertised settings (idempotent: only zero fields
+	// change). Gating this on MaxConcurrentStreams==0 used to leave
+	// InitialWindowSize at 0 when a caller set only MaxConcurrentStreams — which
+	// then advertised a 0 recv window and deadlocked every request body.
+	o.AdvertisedSettings = o.AdvertisedSettings.defaulted()
 	if o.StreamEventBuffer <= 0 {
 		o.StreamEventBuffer = 8
 	}
@@ -261,7 +263,7 @@ func NewServerConn(ctx context.Context, nc net.Conn, opts ServerConnOptions) (*S
 	// Steps 3-5: handshake — read client SETTINGS, send ACK, read ACK.
 	// Create the real frame handler early so that non-SETTINGS frames
 	// arriving during the handshake (e.g. HEADERS) are not lost.
-	sc.handler = newServerConnHandler(sc, sc.dec, int(sc.opts.AdvertisedSettings.MaxHeaderListSize))
+	sc.handler = newServerConnHandler(sc, sc.dec, int(sc.opts.AdvertisedSettings.MaxHeaderListSize), int32(sc.opts.AdvertisedSettings.InitialWindowSize)) //nolint:gosec // G115: AdvertisedSettings.defaulted() clamps InitialWindowSize to ≤ 2^31-1
 	peer, err := handshakeServerSettings(ctx, sc.fr, sc.handler)
 	if err != nil {
 		_ = nc.Close()
@@ -719,6 +721,11 @@ func (s AdvertisedSettings) defaulted() AdvertisedSettings {
 	}
 	if s.InitialWindowSize == 0 {
 		s.InitialWindowSize = 65535
+	} else if s.InitialWindowSize > 1<<31-1 {
+		// RFC 9113 §6.5.2: a SETTINGS_INITIAL_WINDOW_SIZE above 2^31-1 is illegal.
+		// Clamp the server's own advertised value so we never advertise an out-of-
+		// range window (and the int32 recv-window seed derived from it stays valid).
+		s.InitialWindowSize = 1<<31 - 1
 	}
 	if s.MaxFrameSize == 0 {
 		s.MaxFrameSize = 16384

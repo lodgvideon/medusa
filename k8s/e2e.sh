@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # End-to-end Kubernetes test for medusa. Deploys a 3-node cluster, verifies
-# clustering, the cross-pod distributed map, scale-out partition migration, and
-# zero-data-loss rolling restart, then tears everything down.
+# clustering, the configured replication factor, the cross-pod distributed map,
+# scale-out partition migration, and zero-data-loss rolling restart, then tears
+# everything down.
 #
 # Skips (exit 0) when no Kubernetes cluster or Docker is reachable, so it is
 # safe to invoke unconditionally. Run from anywhere:
@@ -71,6 +72,16 @@ if [ "$(echo "$out" | grep -c '"members":3')" = "3" ]; then
   ok "all 3 pods report members=3"
 else
   bad "members != 3 -> $out"
+fi
+
+# ---- test: configured replication factor ----
+echo "=== test: replication factor ==="
+# The manifest sets MEDUSA_BACKUPS=1, so every pod's /stats must report it.
+out=$(incluster 'for n in 0 1 2; do curl -s medusa-$n.medusa:8080/stats; echo; done')
+if [ "$(echo "$out" | grep -c '"backups":1')" = "3" ]; then
+  ok "all 3 pods report the configured backups=1"
+else
+  bad "backups != 1 -> $out"
 fi
 
 # ---- test: cross-pod distributed map ----

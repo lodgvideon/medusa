@@ -40,7 +40,7 @@ func (sc *ServerConn) registerStream(id uint32, s *ServerStream) bool {
 	initial := settingValue(sc.peerSettings, frame.SettingInitialWindowSize, connInitialRecvWindow)
 	sc.psMu.RUnlock()
 	s.mu.Lock()
-	s.sendWindow = int32(initial) //nolint:gosec // G115: INITIAL_WINDOW_SIZE ≤ 2^31-1 per RFC
+		s.sendWindow = int32(initial) //nolint:gosec // G115: INITIAL_WINDOW_SIZE ≤ 2^31-1 per RFC
 	s.mu.Unlock()
 	s.sc = sc
 
@@ -205,7 +205,7 @@ func (sc *ServerConn) applyPeerSettings(s frame.SettingsParams) error {
 				st.mu.Unlock()
 				return connError{code: frame.ErrCodeFlowControlError, msg: fmt.Sprintf("SETTINGS_INITIAL_WINDOW_SIZE delta overflowed stream %d send window", st.id)}
 			}
-			st.sendWindow = int32(newWin) //nolint:gosec // G115: checked above
+						st.sendWindow = int32(newWin) //nolint:gosec // G115: checked above
 			st.mu.Unlock()
 		}
 
@@ -226,7 +226,7 @@ func (sc *ServerConn) onWindowUpdate(streamID, increment uint32) error {
 			sc.fcOutMu.Unlock()
 			return connError{code: frame.ErrCodeFlowControlError, msg: "WINDOW_UPDATE overflowed connection send window"}
 		}
-		sc.peerConnSendWindow = int32(newVal) //nolint:gosec // G115: checked above
+				sc.peerConnSendWindow = int32(newVal) //nolint:gosec // G115: checked above
 		sc.fcOutCond.Broadcast()
 		sc.fcOutMu.Unlock()
 		return nil
@@ -249,7 +249,7 @@ func (sc *ServerConn) onWindowUpdate(streamID, increment uint32) error {
 		_ = sc.writeServerRSTStream(s, frame.ErrCodeFlowControlError)
 		return nil
 	}
-	s.sendWindow = int32(newVal) //nolint:gosec // G115: checked above
+		s.sendWindow = int32(newVal) //nolint:gosec // G115: checked above
 	s.mu.Unlock()
 	sc.fcOutMu.Lock()
 	sc.fcOutCond.Broadcast()
@@ -259,7 +259,7 @@ func (sc *ServerConn) onWindowUpdate(streamID, increment uint32) error {
 
 // onDataReceived debits flow-control windows for an inbound DATA frame.
 func (sc *ServerConn) onDataReceived(s *ServerStream, length uint32) error {
-	debit := int32(length) //nolint:gosec // G115: frame length ≤ 2^24 per RFC
+		debit := int32(length) //nolint:gosec // G115: frame length ≤ 2^24 per RFC
 
 	s.mu.Lock()
 	s.recvWindow -= debit
@@ -272,7 +272,7 @@ func (sc *ServerConn) onDataReceived(s *ServerStream, length uint32) error {
 	if s.recvRefundPending >= recvWindowRefundThreshold {
 		streamRefund = s.recvRefundPending
 		s.recvRefundPending = 0
-		s.recvWindow += int32(streamRefund) //nolint:gosec // G115: refund ≤ initial
+				s.recvWindow += int32(streamRefund) //nolint:gosec // G115: refund ≤ initial
 	}
 	s.mu.Unlock()
 
@@ -287,7 +287,7 @@ func (sc *ServerConn) onDataReceived(s *ServerStream, length uint32) error {
 	if sc.connRefundPending >= recvWindowRefundThreshold {
 		connRefund = sc.connRefundPending
 		sc.connRefundPending = 0
-		sc.connRecvWindow += int32(connRefund) //nolint:gosec // G115: refund ≤ initial
+				sc.connRecvWindow += int32(connRefund) //nolint:gosec // G115: refund ≤ initial
 	}
 	sc.fcMu.Unlock()
 
@@ -445,7 +445,7 @@ func (sc *ServerConn) acquireSendCredits(ctx context.Context, ss *ServerStream, 
 			avail = connWin
 		}
 		if avail > 0 {
-			n := int32(want) //nolint:gosec // G115: want ≤ maxFrameSize
+				n := int32(want) //nolint:gosec // G115: want ≤ maxFrameSize
 			if n > avail {
 				n = avail
 			}
@@ -500,7 +500,7 @@ func (sc *ServerConn) acquireSendCreditsSlow(ctx context.Context, ss *ServerStre
 			avail = connWin
 		}
 		if avail > 0 {
-			n := int32(want) //nolint:gosec // G115: want ≤ maxFrameSize
+				n := int32(want) //nolint:gosec // G115: want ≤ maxFrameSize
 			if n > avail {
 				n = avail
 			}

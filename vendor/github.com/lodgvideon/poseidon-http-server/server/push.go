@@ -50,7 +50,7 @@ const (
 // pusher is the subset of connStreamWriter that supports Push.
 // We use a separate type to keep the check explicit.
 type pusher interface {
-	canPush() (pushableStream, bool)
+canPush() (pushableStream, bool)
 }
 
 // pushableStream is the subset of conn.ServerStream we need for Push.
@@ -63,10 +63,10 @@ type pushableStream interface {
 // pusher returns the underlying stream if this ResponseWriter can issue
 // push promises. Currently only connStreamWriter-backed writers support it.
 func (w *responseWriter) pusher() (pushableStream, bool) {
-	if cs, ok := w.sw.(pusher); ok {
-		return cs.canPush()
-	}
-	return nil, false
+if cs, ok := w.sw.(pusher); ok {
+	return cs.canPush()
+}
+return nil, false
 }
 
 // Push creates a PUSH_PROMISE on the current stream and returns a

@@ -50,7 +50,7 @@ spec:
       terminationGracePeriodSeconds: 10
       containers:
         - name: medusa
-          image: medusa:v7
+          image: medusa:v8
           imagePullPolicy: IfNotPresent
           ports:
             - { name: data, containerPort: 7700 }
@@ -69,6 +69,11 @@ spec:
             # rejoins immediately.
             - name: MEDUSA_SEEDS
               value: "medusa-0.medusa:7700,medusa-1.medusa:7700,medusa-2.medusa:7700"
+            # Backup copies per partition (replication factor − 1). 1 tolerates a
+            # single node loss; raise it for more simultaneous-failure tolerance
+            # at the cost of more write traffic and memory.
+            - name: MEDUSA_BACKUPS
+              value: "1"
             # Persist snapshots so the cluster survives a whole-cluster restart.
             - name: MEDUSA_DATA_DIR
               value: /data

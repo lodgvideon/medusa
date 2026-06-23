@@ -99,3 +99,5 @@ func staticIndex(name, value []byte) (uint64, bool) {
 	}
 	return nameOnly, false
 }
+
+

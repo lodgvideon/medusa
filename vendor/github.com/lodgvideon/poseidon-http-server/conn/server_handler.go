@@ -45,6 +45,11 @@ type serverConnHandler struct {
 	// maxHeaderBytes caps the accumulated compressed size of one header block.
 	maxHeaderBytes int
 
+	// recvWindowSeed is the initial per-stream receive window for new streams,
+	// seeded from the server's advertised InitialWindowSize so the server's recv
+	// accounting matches what the peer was told it may send.
+	recvWindowSeed int32
+
 	scratch          []hpack.HeaderField
 	pendingStreamID  uint32
 	pendingBuf       []byte
@@ -56,14 +61,18 @@ type serverConnHandler struct {
 	pendingDiscard bool
 }
 
-func newServerConnHandler(streams serverConnOps, dec *hpack.Decoder, maxHeaderBytes int) *serverConnHandler {
+func newServerConnHandler(streams serverConnOps, dec *hpack.Decoder, maxHeaderBytes int, recvWindowSeed int32) *serverConnHandler {
 	if maxHeaderBytes <= 0 {
 		maxHeaderBytes = defaultMaxHeaderBytes
+	}
+	if recvWindowSeed <= 0 {
+		recvWindowSeed = connInitialRecvWindow
 	}
 	return &serverConnHandler{
 		streams:        streams,
 		dec:            dec,
 		maxHeaderBytes: maxHeaderBytes,
+		recvWindowSeed: recvWindowSeed,
 		scratch:        make([]hpack.HeaderField, 0, 16),
 	}
 }
@@ -134,7 +143,7 @@ func (h *serverConnHandler) OnHeaders(fh frame.FrameHeader, hb frame.HeaderBlock
 		if err := h.streams.validateClientStreamID(fh.StreamID); err != nil {
 			return err
 		}
-		s = newServerStream(fh.StreamID, 8, nil, int32(connInitialRecvWindow))
+		s = newServerStream(fh.StreamID, 8, nil, h.recvWindowSeed)
 		if !h.streams.registerStream(fh.StreamID, s) {
 			refused = true
 		}

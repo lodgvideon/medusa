@@ -91,8 +91,8 @@ func (sc *ServerConn) writePushPromise(_ context.Context, parent *ServerStream, 
 
 	// Create the promised stream.
 	pushStream := &ServerStream{
-		id:     promisedID,
-		sc:     sc,
+		id:    promisedID,
+		sc:    sc,
 		events: make(chan StreamEvent, 4),
 	}
 

@@ -452,9 +452,16 @@ func NewHTTPRequest(req *Request) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
-	if req.Body != nil {
+	// Body is never nil (http.NoBody from http.NewRequest), matching net/http.
+	// Pick exactly one source: the buffered []byte, the streaming reader (when
+	// the server runs with Options.StreamingBody), or neither (empty body).
+	switch {
+	case req.Body != nil:
 		httpReq.Body = &closeableReader{data: req.Body}
 		httpReq.ContentLength = int64(len(req.Body))
+	case req.BodyReader != nil:
+		httpReq.Body = req.BodyReader
+		httpReq.ContentLength = -1 // unknown length for a stream
 	}
 	for _, h := range req.Headers {
 		httpReq.Header.Add(string(h.Name), string(h.Value))

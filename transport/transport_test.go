@@ -123,7 +123,9 @@ func TestLargePayloadGrowsBuffer(t *testing.T) {
 // echoes a large payload both ways; symmetric large transfers stress Poseidon's
 // bidirectional flow control, which is separately known to be unstable. Each
 // attempt has its own deadline so a stall fails fast rather than hanging, with
-// a retry to ride out the occasional REFUSED_STREAM under concurrent churn.
+// a retry to ride out the occasional REFUSED_STREAM under concurrent churn. The
+// per-attempt budget is widened under the race detector, whose ~10–20× slowdown
+// otherwise blows the deadline mid-transfer (the failure mode seen in CI).
 func TestPoseidonMegabyteRequest(t *testing.T) {
 	drain := func(medusav1.MessageType, []byte, []byte) (medusav1.MessageType, []byte, error) {
 		return medusav1.MessageType_MESSAGE_TYPE_PUT_RESPONSE, nil, nil // ack only
@@ -131,9 +133,14 @@ func TestPoseidonMegabyteRequest(t *testing.T) {
 	cli, addr := poseidonPair(t, drain)
 	payload := bytes.Repeat([]byte("v"), 1<<20) // 1 MiB
 
+	perAttempt := 8 * time.Second
+	if raceEnabled {
+		perAttempt = 40 * time.Second
+	}
+
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), perAttempt)
 		_, _, err = cli.Send(ctx, addr,
 			medusav1.MessageType_MESSAGE_TYPE_PUT_REQUEST, payload, nil)
 		cancel()

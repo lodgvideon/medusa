@@ -102,6 +102,11 @@ func TestStats(t *testing.T) {
 	if !strings.Contains(s, "\"localEntries\":1") {
 		t.Errorf("stats = %s, want localEntries:1", s)
 	}
+	// A single-node test server still reports the configured replication factor;
+	// the default is one backup.
+	if !strings.Contains(s, "\"backups\":1") {
+		t.Errorf("stats = %s, want backups:1", s)
+	}
 }
 
 func TestPutWithTTLExpires(t *testing.T) {

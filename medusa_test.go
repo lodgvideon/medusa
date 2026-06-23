@@ -200,6 +200,70 @@ func TestGracefulLeavePreservesData(t *testing.T) {
 	}
 }
 
+func TestConfigurableBackupsToleratesTwoFailures(t *testing.T) {
+	sw := transport.NewSwitch()
+	ctx := context.Background()
+	tick := 40 * time.Millisecond
+	mk := func(id string, seeds []string) *medusa.Node {
+		n, err := medusa.New(medusa.Config{
+			ID: id, Addr: id, Transport: sw.NewTransport(id), Seeds: seeds,
+			MaintenanceInterval: tick, Backups: 2,
+		})
+		if err != nil {
+			t.Fatalf("new %s: %v", id, err)
+		}
+		t.Cleanup(func() { _ = n.Close() })
+		return n
+	}
+
+	// Four nodes, two backups: every partition has three distinct holders
+	// (owner + 2 backups), so any two-node loss still leaves one holder alive.
+	a := mk("a", nil)
+	b := mk("b", []string{"a"})
+	c := mk("c", []string{"a"})
+	d := mk("d", []string{"a"})
+	awaitMembers(t, 4, a, b, c, d)
+
+	if got := a.BackupCount(); got != 2 {
+		t.Fatalf("BackupCount = %d, want 2", got)
+	}
+
+	const N = 200
+	for i := 0; i < N; i++ {
+		key := []byte{byte(i), byte(i >> 8)}
+		if err := a.Map("m").Put(ctx, key, []byte{byte(i)}); err != nil {
+			t.Fatalf("put %d: %v", i, err)
+		}
+	}
+
+	// Two nodes crash at once. A single-backup cluster would lose any key whose
+	// owner and sole backup were the two casualties; two backups must not.
+	_ = c.Close()
+	_ = d.Close()
+	awaitMembers(t, 2, a, b)
+
+	// Every key remains readable from the survivors once the eviction-triggered
+	// rebalance has moved data into place.
+	deadline := time.Now().Add(4 * time.Second)
+	for i := 0; i < N; i++ {
+		key := []byte{byte(i), byte(i >> 8)}
+		var (
+			v   []byte
+			ok  bool
+			err error
+		)
+		for time.Now().Before(deadline) {
+			if v, ok, err = b.Map("m").Get(ctx, key); err == nil && ok {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if err != nil || !ok || len(v) != 1 || v[0] != byte(i) {
+			t.Fatalf("key %d after two-node loss: v=%v ok=%v err=%v", i, v, ok, err)
+		}
+	}
+}
+
 func TestMaintenanceLoopConvergesWithoutExplicitJoin(t *testing.T) {
 	sw := transport.NewSwitch()
 	tick := 50 * time.Millisecond

@@ -73,6 +73,14 @@ type Config struct {
 	// Seeds are cluster addresses the background maintenance loop joins through
 	// while this node is isolated. Safe to include this node's own address.
 	Seeds []string
+	// Backups is the number of backup copies kept for every partition (the
+	// replication factor minus one). Each write is synchronously replicated to
+	// this many distinct peers, so the cluster tolerates that many simultaneous
+	// holder failures without data loss. Zero selects the default of 1 (the
+	// floor: medusa's "a single node failure loses no data" guarantee needs at
+	// least one backup). A value larger than the number of peers is capped to
+	// however many distinct backups the cluster can supply.
+	Backups int
 	// MaintenanceInterval overrides how often the node retries joining and
 	// gossips. Zero uses defaultMaintenanceInterval.
 	MaintenanceInterval time.Duration
@@ -111,8 +119,12 @@ func New(cfg Config) (*Node, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	backups := cfg.Backups
+	if backups < 1 {
+		backups = 1 // floor: at least one backup so a single failure loses no data
+	}
 	n := &Node{tr: tr, seeds: cfg.Seeds, log: logger.With("node", id), dataDir: cfg.DataDir}
-	n.mem = cluster.New(cluster.Member{ID: id, Addr: cfg.Addr}, tr)
+	n.mem = cluster.New(cluster.Member{ID: id, Addr: cfg.Addr}, tr, backups)
 	n.maps = imap.NewService(n.mem, tr)
 
 	if n.dataDir != "" {
@@ -260,6 +272,10 @@ func (n *Node) Map(name string) *imap.Map { return n.maps.Map(name) }
 // is a useful signal that data has migrated to a node and a building block for
 // metrics.
 func (n *Node) LocalEntryCount() int { return n.maps.LocalEntryCount() }
+
+// BackupCount returns the number of backup copies kept per partition (the
+// replication factor minus one), as currently realised by the partition table.
+func (n *Node) BackupCount() int { return n.mem.Table().BackupCount() }
 
 // Members returns the current cluster members, sorted by id.
 func (n *Node) Members() []cluster.Member { return n.mem.Members() }

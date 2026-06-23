@@ -17,6 +17,8 @@ import (
 //
 //	GET    /healthz                  liveness — always 200 while serving
 //	GET    /readyz                   readiness — 200 once the node has members
+//	GET    /metrics                  Prometheus metrics (text exposition format)
+//	GET    /stats                    JSON {members, localEntries, backups}
 //	GET    /members                  JSON array of cluster members
 //	GET    /v1/maps/{map}/{key}      fetch a value (404 if absent)
 //	PUT    /v1/maps/{map}/{key}      store the request body as the value
@@ -49,6 +51,7 @@ func New(node *medusa.Node) http.Handler {
 		_ = json.NewEncoder(w).Encode(stats{
 			Members:      len(node.Members()),
 			LocalEntries: node.LocalEntryCount(),
+			Backups:      node.BackupCount(),
 		})
 	})
 
@@ -148,6 +151,7 @@ type member struct {
 type stats struct {
 	Members      int `json:"members"`
 	LocalEntries int `json:"localEntries"`
+	Backups      int `json:"backups"`
 }
 
 func writeText(w http.ResponseWriter, status int, msg string) {

@@ -64,21 +64,27 @@ func (s *Service) applyRemove(ctx context.Context, name string, key []byte, isBa
 	return existed
 }
 
-// replicate forwards a write to the partition's backup member, best-effort.
+// replicate forwards a write to every backup member of the partition,
+// best-effort. With a replication factor of N this loops over all N backups so
+// the data survives up to N simultaneous holder failures. The loop is
+// allocation-free: backups are read by index, not collected into a slice.
 func (s *Service) replicate(ctx context.Context, p int, op medusav1.MessageType, name string, key, value []byte, ttlMs int64) {
-	backup, ok := s.mem.Table().BackupOf(p)
-	if !ok || backup == s.self {
-		return
-	}
-	addr, ok := s.mem.AddrOf(backup)
-	if !ok {
-		return
-	}
-	switch op {
-	case medusav1.MessageType_MESSAGE_TYPE_PUT_REQUEST:
-		_ = s.sendPut(ctx, addr, name, key, value, ttlMs, true)
-	case medusav1.MessageType_MESSAGE_TYPE_REMOVE_REQUEST:
-		_, _ = s.sendRemove(ctx, addr, name, key, true)
+	tbl := s.mem.Table()
+	for i, n := 0, tbl.NumBackups(p); i < n; i++ {
+		backup, ok := tbl.BackupAt(p, i)
+		if !ok || backup == s.self {
+			continue
+		}
+		addr, ok := s.mem.AddrOf(backup)
+		if !ok {
+			continue
+		}
+		switch op {
+		case medusav1.MessageType_MESSAGE_TYPE_PUT_REQUEST:
+			_ = s.sendPut(ctx, addr, name, key, value, ttlMs, true)
+		case medusav1.MessageType_MESSAGE_TYPE_REMOVE_REQUEST:
+			_, _ = s.sendRemove(ctx, addr, name, key, true)
+		}
 	}
 }
 
@@ -228,22 +234,29 @@ func (s *Service) Migrate(ctx context.Context, table *partition.Table) {
 			continue
 		}
 		owner := table.OwnerOf(p)
-		backup, hasBackup := table.BackupOf(p)
-		selfHolds := owner == s.self || (hasBackup && backup == s.self)
+		selfHolds := owner == s.self
 
-		pushedOK := true
-		targets := [2]struct {
-			id   string
-			send bool
-		}{
-			{owner, owner != "" && owner != s.self},
-			{backup, hasBackup && backup != s.self},
+		// Every holder this node must push to: the owner plus all backups,
+		// minus itself. If this node is among them it keeps its copy.
+		targets := make([]string, 0, 1+table.NumBackups(p))
+		if owner != "" && owner != s.self {
+			targets = append(targets, owner)
 		}
-		for _, target := range targets {
-			if !target.send {
+		for i, n := 0, table.NumBackups(p); i < n; i++ {
+			b, ok := table.BackupAt(p, i)
+			if !ok {
 				continue
 			}
-			addr, ok := s.mem.AddrOf(target.id)
+			if b == s.self {
+				selfHolds = true
+				continue
+			}
+			targets = append(targets, b)
+		}
+
+		pushedOK := true
+		for _, id := range targets {
+			addr, ok := s.mem.AddrOf(id)
 			if !ok {
 				pushedOK = false
 				continue

@@ -18,8 +18,9 @@ import (
 // write lock; reads take the read lock, so routing lookups stay cheap and
 // contention-free on the hot path.
 type Membership struct {
-	self Member
-	tr   transport.Transport
+	self    Member
+	tr      transport.Transport
+	backups int // backups per partition; threaded into every partition table built
 
 	mu      sync.RWMutex
 	members map[string]Member
@@ -29,13 +30,16 @@ type Membership struct {
 	removed map[string]int64 // tombstones (id -> unix nano removed) suppressing gossip re-add
 }
 
-// New creates a Membership containing only self and bound to tr. The caller
-// must register a transport handler that dispatches cluster message types to
-// (*Membership).Handle (the top-level node does this).
-func New(self Member, tr transport.Transport) *Membership {
+// New creates a Membership containing only self and bound to tr. backups is the
+// number of backup copies each partition keeps (the replication factor minus
+// one); it is baked into every partition table this membership derives. The
+// caller must register a transport handler that dispatches cluster message
+// types to (*Membership).Handle (the top-level node does this).
+func New(self Member, tr transport.Transport, backups int) *Membership {
 	m := &Membership{
 		self:    self,
 		tr:      tr,
+		backups: backups,
 		members: map[string]Member{self.ID: self},
 		misses:  map[string]uint8{},
 		removed: map[string]int64{},
@@ -51,7 +55,7 @@ func (m *Membership) rebuildLocked() {
 	for id := range m.members {
 		ids = append(ids, id)
 	}
-	m.table = partition.NewTable(ids)
+	m.table = partition.NewTable(ids, m.backups)
 }
 
 // Self returns this node's own member identity.
@@ -408,5 +412,5 @@ func (m *Membership) TableWithout(id string) *partition.Table {
 			ids = append(ids, mid)
 		}
 	}
-	return partition.NewTable(ids)
+	return partition.NewTable(ids, m.backups)
 }
