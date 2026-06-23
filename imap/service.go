@@ -305,7 +305,9 @@ func (s *Service) Migrate(ctx context.Context, table *partition.Table) {
 			}
 		}
 		if !selfHolds && pushedOK {
-			s.store.dropPartition(p)
+			// Drop only the entries we actually migrated and that are unchanged —
+			// never a blanket wipe — so a write that raced this migration survives.
+			s.store.dropMigrated(p, entries)
 		}
 	}
 }

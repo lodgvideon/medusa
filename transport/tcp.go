@@ -193,11 +193,16 @@ func (t *tcpTransport) getConn(addr string) (*clientConn, error) {
 }
 
 func (t *tcpTransport) putConn(addr string, cc *clientConn) {
+	// Hold t.mu across the channel send. Close drains and replaces the pool under
+	// t.mu, so if we released the lock first it could swap the map and drain the
+	// channel in the gap, and our send would strand cc in an orphaned channel
+	// that nothing ever closes. Serialising here means either Close runs first
+	// (we observe closed and close cc) or we put cc into the live channel before
+	// Close drains it (Close then closes it). The send is non-blocking.
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	ch := t.conns[addr]
-	closed := t.closed
-	t.mu.Unlock()
-	if closed || ch == nil {
+	if t.closed || ch == nil {
 		_ = cc.c.Close()
 		return
 	}

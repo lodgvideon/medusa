@@ -14,6 +14,11 @@ import (
 	"github.com/lodgvideon/medusa/metrics"
 )
 
+// maxBodyBytes caps an admin-API request body so a single request cannot drive
+// unbounded allocation (OOM/DoS). It matches the transport's per-message window,
+// the largest value the grid stores anyway.
+const maxBodyBytes = 16 << 20 // 16 MiB
+
 // Option configures the HTTP API.
 type Option func(*config)
 
@@ -102,7 +107,7 @@ func New(node *medusa.Node, opts ...Option) http.Handler {
 	})
 
 	mux.HandleFunc("PUT /v1/maps/{map}/{key}", func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 		if err != nil {
 			writeText(w, http.StatusBadRequest, err.Error())
 			return
@@ -135,7 +140,7 @@ func New(node *medusa.Node, opts ...Option) http.Handler {
 			writeText(w, http.StatusBadRequest, "missing ?proc=")
 			return
 		}
-		arg, err := io.ReadAll(r.Body)
+		arg, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 		if err != nil {
 			writeText(w, http.StatusBadRequest, err.Error())
 			return

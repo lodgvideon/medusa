@@ -67,8 +67,18 @@ func main() {
 	}
 
 	// MEDUSA_AUTH_TOKEN, when set, requires a bearer token on the admin API
-	// (WithToken("") is a no-op, so passing it unconditionally is safe).
-	srv := &http.Server{Addr: httpAddr, Handler: httpapi.New(node, httpapi.WithToken(os.Getenv("MEDUSA_AUTH_TOKEN")))}
+	// (WithToken("") is a no-op, so passing it unconditionally is safe). The
+	// timeouts bound how long a slow or stalled client can hold a connection,
+	// preventing Slowloris-style goroutine/fd exhaustion on this cleartext port.
+	srv := &http.Server{
+		Addr:              httpAddr,
+		Handler:           httpapi.New(node, httpapi.WithToken(os.Getenv("MEDUSA_AUTH_TOKEN"))),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("http server", "err", err)

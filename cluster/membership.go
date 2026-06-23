@@ -22,12 +22,13 @@ type Membership struct {
 	tr      transport.Transport
 	backups int // backups per partition; threaded into every partition table built
 
-	mu      sync.RWMutex
-	members map[string]Member
-	version uint64
-	table   *partition.Table
-	misses  map[string]uint8 // consecutive failed heartbeats per member id
-	removed map[string]int64 // tombstones (id -> unix nano removed) suppressing gossip re-add
+	mu       sync.RWMutex
+	members  map[string]Member
+	version  uint64 // bumps on any membership change (incl. address-only updates)
+	tableVer uint64 // bumps only when the partition table is rebuilt (the id set changed)
+	table    *partition.Table
+	misses   map[string]uint8 // consecutive failed heartbeats per member id
+	removed  map[string]int64 // tombstones (id -> unix nano removed) suppressing gossip re-add
 }
 
 // New creates a Membership containing only self and bound to tr. backups is the
@@ -48,14 +49,25 @@ func New(self Member, tr transport.Transport, backups int) *Membership {
 	return m
 }
 
-// rebuildLocked recomputes the partition table from the current member set.
-// The caller must hold mu for writing.
+// rebuildLocked recomputes the partition table from the current member set and
+// bumps tableVer. The caller must hold mu for writing. tableVer changes only
+// here — i.e. only when the id set changed — so callers can distinguish a real
+// topology change (which warrants data migration) from an address-only update.
 func (m *Membership) rebuildLocked() {
 	ids := make([]string, 0, len(m.members))
 	for id := range m.members {
 		ids = append(ids, id)
 	}
 	m.table = partition.NewTable(ids, m.backups)
+	m.tableVer++
+}
+
+// TableVersion returns the partition-table epoch — incremented only when the
+// table is rebuilt (a member joined or left), not for address-only changes.
+func (m *Membership) TableVersion() uint64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.tableVer
 }
 
 // Self returns this node's own member identity.
@@ -134,6 +146,15 @@ func (m *Membership) merge(members []Member) bool {
 func (m *Membership) Remove(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.removeLocked(id)
+}
+
+// removeLocked is Remove's body; the caller must hold mu for writing. It exists
+// so DetectFailures can increment the miss counter, test the threshold, and
+// evict as one atomic critical section — otherwise a concurrent rejoin could
+// slip between the decision and the removal and the node would evict a peer that
+// had just explicitly rejoined.
+func (m *Membership) removeLocked(id string) bool {
 	if id == m.self.ID {
 		return false
 	}
@@ -158,6 +179,7 @@ func (m *Membership) rejoin(mem Member) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.removed, mem.ID)
+	delete(m.misses, mem.ID) // an explicit JOIN proves liveness — reset the failure count
 	if existing, ok := m.members[mem.ID]; !ok || existing.Addr != mem.Addr {
 		m.members[mem.ID] = mem
 		m.version++
@@ -297,16 +319,14 @@ func (m *Membership) DetectFailures(ctx context.Context, threshold uint8) []stri
 			continue
 		}
 		if err := m.Ping(ctx, peer.Addr); err != nil {
+			// Increment, test the threshold, and evict as one critical section so
+			// a concurrent rejoin cannot slip between the decision and the removal.
 			m.mu.Lock()
 			m.misses[peer.ID]++
-			reached := m.misses[peer.ID] >= threshold
-			m.mu.Unlock()
-			if reached && m.Remove(peer.ID) {
-				m.mu.Lock()
-				delete(m.misses, peer.ID)
-				m.mu.Unlock()
+			if m.misses[peer.ID] >= threshold && m.removeLocked(peer.ID) {
 				evicted = append(evicted, peer.ID)
 			}
+			m.mu.Unlock()
 		} else {
 			m.mu.Lock()
 			delete(m.misses, peer.ID) // healthy: reset miss count

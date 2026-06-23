@@ -7,6 +7,7 @@ import (
 
 	"github.com/lodgvideon/medusa/cluster"
 	medusav1 "github.com/lodgvideon/medusa/genproto/medusa/v1"
+	"github.com/lodgvideon/medusa/partition"
 	"github.com/lodgvideon/medusa/transport"
 )
 
@@ -66,6 +67,35 @@ func TestSendHelpersPropagateTransportError(t *testing.T) {
 	}
 	if _, err := svc.sendRemove(ctx, "peer", "m", []byte("k"), false); !errors.Is(err, boom) {
 		t.Errorf("sendRemove err = %v, want boom", err)
+	}
+}
+
+// TestDropMigratedKeepsRacingWrites is the regression guard for the migration
+// data-loss race: a write that lands after Migrate snapshots a partition but
+// before it drops it must not be wiped. dropMigrated only deletes entries whose
+// value is unchanged since the snapshot.
+func TestDropMigratedKeepsRacingWrites(t *testing.T) {
+	st := newStore()
+	key := []byte("k")
+	p := partition.For(key)
+	st.put(p, "m", key, []byte("v1"), 0)
+
+	// Snapshot captures v1, as Migrate does before pushing to the new owner.
+	snap := st.snapshotPartition(p)
+
+	// A write races in after the snapshot, overwriting the value.
+	st.put(p, "m", key, []byte("v2"), 0)
+
+	// Dropping the migrated (v1) snapshot must NOT delete the now-changed entry.
+	st.dropMigrated(p, snap)
+	if v, ok := st.get(p, "m", key); !ok || string(v) != "v2" {
+		t.Fatalf("racing write lost: got %q,%v want \"v2\",true", v, ok)
+	}
+
+	// Dropping a snapshot that matches the current value removes it.
+	st.dropMigrated(p, st.snapshotPartition(p))
+	if _, ok := st.get(p, "m", key); ok {
+		t.Fatal("unchanged migrated entry should have been dropped")
 	}
 }
 

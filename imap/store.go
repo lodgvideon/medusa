@@ -1,6 +1,7 @@
 package imap
 
 import (
+	"bytes"
 	"sync"
 	"time"
 
@@ -134,14 +135,32 @@ func (s *store) loadAll(entries []entry) {
 	}
 }
 
-// dropPartition removes every entry in partition p across all maps.
-func (s *store) dropPartition(p int) {
+// dropMigrated removes the given entries from partition p after they have been
+// migrated away — but only those whose current stored value still matches what
+// was captured (same bytes and expiry). An entry overwritten or newly created
+// since the snapshot is left in place, so a write that raced the migration is
+// never wiped: it stays local (served via backup fallback and moved on a later
+// rebalance) rather than being silently lost. The compare-and-delete runs under
+// the shard lock, so a concurrent write either lands before it (and is seen as
+// changed, hence kept) or after it (and is never touched).
+func (s *store) dropMigrated(p int, entries []entry) {
 	sh := &s.shards[p]
 	sh.mu.Lock()
-	for name := range sh.m {
-		delete(sh.m, name)
+	defer sh.mu.Unlock()
+	for _, e := range entries {
+		inner := sh.m[e.mapName]
+		if inner == nil {
+			continue
+		}
+		if cur, ok := inner[e.key]; ok && cur.expireAt == e.expireAt && bytes.Equal(cur.data, e.value) {
+			delete(inner, e.key)
+		}
 	}
-	sh.mu.Unlock()
+	for name, inner := range sh.m {
+		if len(inner) == 0 {
+			delete(sh.m, name)
+		}
+	}
 }
 
 // sweepExpired removes expired entries across all shards, returning the count

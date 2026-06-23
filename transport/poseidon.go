@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -207,6 +208,10 @@ func (t *poseidonTransport) Send(ctx context.Context, addr string, reqType medus
 		WantBody: true,
 	}
 	var resp pclient.Response
+	// Reset returns the response's pooled header slabs to conn.GetHeaderSlabPool;
+	// without it every RPC permanently removes slabs from the pool (a steady
+	// heap leak). It runs at return, after Body has been copied into dst below.
+	defer resp.Reset()
 	if err := cl.Do(ctx, &httpReq, &resp); err != nil {
 		return 0, dst, err
 	}
@@ -214,7 +219,11 @@ func (t *poseidonTransport) Send(ctx context.Context, addr string, reqType medus
 	respType := medusav1.MessageType(headerInt(resp.Headers, headerMsgType))
 	if resp.Status != http.StatusOK {
 		var e medusav1.Error
-		_ = e.UnmarshalVT(resp.Body)
+		if uerr := e.UnmarshalVT(resp.Body); uerr != nil {
+			// A non-protobuf error body (e.g. an HTML 5xx from a proxy/gateway):
+			// surface the status rather than an empty "remote error 0:".
+			return respType, dst, &RemoteError{Message: fmt.Sprintf("remote status %d (undecodable error body)", resp.Status)}
+		}
 		return respType, dst, &RemoteError{Code: e.Code, Message: e.Message}
 	}
 	// resp.Body is only valid until resp.Reset(); copy into the caller's buffer.

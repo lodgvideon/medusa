@@ -144,6 +144,9 @@ func New(cfg Config) (*Node, error) {
 	n := &Node{tr: tr, seeds: cfg.Seeds, log: logger.With("node", id), dataDir: cfg.DataDir}
 	n.mem = cluster.New(cluster.Member{ID: id, Addr: cfg.Addr}, tr, backups)
 	n.maps = imap.NewService(n.mem, tr)
+	// Seed with the initial table epoch so the first (self-only) table build is
+	// not mistaken for a rebalance.
+	n.lastMigratedVersion = n.mem.TableVersion()
 
 	if n.dataDir != "" {
 		if err := n.loadSnapshot(); err != nil {
@@ -160,6 +163,11 @@ func New(cfg Config) (*Node, error) {
 	}
 
 	if err := tr.Listen(n.dispatch); err != nil {
+		// New won't return a Node, so Close (and thus CloseWAL) will never run —
+		// release the WAL handle here to avoid leaking the open file.
+		if n.dataDir != "" {
+			_ = n.maps.CloseWAL()
+		}
 		return nil, err
 	}
 
@@ -209,20 +217,25 @@ func (n *Node) maintain(ctx context.Context, interval time.Duration) {
 			// When the partition table changes (a node joined, left, or was
 			// evicted), move the data that this node no longer owns to its new
 			// holders.
-			if v := n.mem.Version(); v != n.lastMigratedVersion {
+			if v := n.mem.TableVersion(); v != n.lastMigratedVersion {
 				n.maps.Migrate(ctx, n.mem.Table())
 				n.lastMigratedVersion = v
 				metrics.Migrations.Add(1)
-				n.log.Info("rebalanced partitions", "version", v, "members", len(n.mem.Members()))
+				n.log.Info("rebalanced partitions", "tableVersion", v, "members", len(n.mem.Members()))
 				// Checkpoint immediately after a rebalance so the snapshot and WAL
 				// reflect the dropped partitions; otherwise a crash before the next
 				// periodic snapshot would replay writes for partitions this node no
 				// longer owns and could re-push that stale data on rejoin.
 				if n.dataDir != "" {
 					if err := n.saveSnapshot(); err != nil {
+						// Leave lastSaveNano unchanged so the periodic path retries
+						// on the next tick rather than waiting a full interval — the
+						// WAL still holds records for the dropped partitions until a
+						// checkpoint succeeds.
 						n.log.Warn("post-rebalance snapshot failed", "err", err)
+					} else {
+						n.lastSaveNano = time.Now().UnixNano()
 					}
-					n.lastSaveNano = time.Now().UnixNano()
 				}
 			}
 			// Reclaim expired entries (lazy expiry already hides them on read).
@@ -232,9 +245,10 @@ func (n *Node) maintain(ctx context.Context, interval time.Duration) {
 			// Persist a snapshot at the configured interval.
 			if n.dataDir != "" && time.Now().UnixNano()-n.lastSaveNano > int64(snapshotInterval) {
 				if err := n.saveSnapshot(); err != nil {
-					n.log.Warn("snapshot save failed", "err", err)
+					n.log.Warn("snapshot save failed", "err", err) // retry next tick
+				} else {
+					n.lastSaveNano = time.Now().UnixNano()
 				}
-				n.lastSaveNano = time.Now().UnixNano()
 			}
 		}
 	}
@@ -269,7 +283,14 @@ func (n *Node) saveSnapshot() error {
 	return n.maps.Checkpoint(n.writeSnapshotFile)
 }
 
-// writeSnapshotFile persists snap to the data directory atomically.
+// writeSnapshotFile persists snap to the data directory atomically and durably:
+// it writes a temp file, fsyncs it, and only then renames it into place — so the
+// snapshot's bytes are on stable storage before it replaces the previous one and
+// before Checkpoint truncates the WAL. Without the fsync, a crash after the
+// rename but before the OS flushed the data pages would leave a durably-truncated
+// WAL alongside an unwritten snapshot: total loss of everything since the prior
+// checkpoint. The temp file is removed on any failure so a botched write does not
+// linger.
 func (n *Node) writeSnapshotFile(snap *medusav1.Snapshot) error {
 	if err := os.MkdirAll(n.dataDir, 0o755); err != nil {
 		return err
@@ -279,10 +300,29 @@ func (n *Node) writeSnapshotFile(snap *medusav1.Snapshot) error {
 		return err
 	}
 	tmp := n.snapshotPath() + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, n.snapshotPath())
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, n.snapshotPath()); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // dispatch routes an inbound frame to the subsystem that owns its message type.

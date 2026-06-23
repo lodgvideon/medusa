@@ -58,7 +58,9 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   compared in constant time). The inter-node data plane can run over **mutual
   TLS** — set `Config.TLS` (or `MEDUSA_TLS_CERT` / `MEDUSA_TLS_KEY` /
   `MEDUSA_TLS_CA`) and node-to-node RPC upgrades from cleartext h2c to HTTP/2
-  over TLS, with peers verified in both directions.
+  over TLS, with peers verified in both directions. The admin API also caps
+  request bodies (16 MiB) and the node binary sets HTTP read/write/idle timeouts,
+  so an oversized or slow client cannot exhaust memory or goroutines.
 - **Persistence (snapshot + write-ahead log)** — with `Config.DataDir` (env
   `MEDUSA_DATA_DIR`, a PVC in k8s) each node snapshots its store to disk
   periodically and on shutdown, *and* appends every mutation to an fsync'd
