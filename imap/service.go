@@ -477,17 +477,24 @@ func remainingTTLms(expireAt, now int64) int64 {
 // LocalEntryCount returns the number of live entries this node currently stores.
 func (s *Service) LocalEntryCount() int { return s.store.entryCount() }
 
-// Evict enforces a soft per-node cap: if this node holds more than max live
-// entries, it removes up to batch of its OWNED entries (a roughly random
-// selection) to drain toward the cap, replicating each removal (isBackup=false)
-// so backups stay consistent — a normal distributed delete. It returns the number
-// removed. max <= 0 disables it. Only owned entries are evicted; a backup copy is
-// the owner's responsibility (and anti-entropy would re-push it).
+// Evict enforces a soft per-node cap: if this node OWNS more than max live
+// entries, it removes up to batch of them (a roughly random selection) to drain
+// toward the cap, replicating each removal (isBackup=false) so backups stay
+// consistent — a normal distributed delete. It returns the number removed. max
+// <= 0 disables it.
+//
+// The cap is on OWNED entries, not the total this node holds: backup copies
+// cannot be evicted (anti-entropy would re-push them from the owner), so capping
+// the total would over-evict — deleting all owned data chasing a backup footprint
+// it cannot shed. Since every node caps its owned share, per-node memory is still
+// bounded to about max*(1+Backups).
 func (s *Service) Evict(ctx context.Context, max, batch int) int {
 	if max <= 0 {
 		return 0
 	}
-	n := s.store.entryCount()
+	tbl := s.mem.Table()
+	owned := func(p int) bool { return tbl.OwnerOf(p) == s.self }
+	n := s.store.countOwned(owned)
 	if n <= max {
 		return 0
 	}
@@ -495,8 +502,7 @@ func (s *Service) Evict(ctx context.Context, max, batch int) int {
 	if excess > batch {
 		excess = batch
 	}
-	tbl := s.mem.Table()
-	victims := s.store.sampleOwned(func(p int) bool { return tbl.OwnerOf(p) == s.self }, excess)
+	victims := s.store.sampleOwned(owned, excess)
 	for _, e := range victims {
 		_, _ = s.applyRemove(ctx, e.mapName, []byte(e.key), false)
 	}

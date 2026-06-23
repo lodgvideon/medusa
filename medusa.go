@@ -110,13 +110,15 @@ type Config struct {
 	// MaintenanceInterval overrides how often the node retries joining and
 	// gossips. Zero uses defaultMaintenanceInterval.
 	MaintenanceInterval time.Duration
-	// MaxEntries caps how many live entries this node holds before it starts
-	// evicting (a soft, per-node bound to prevent unbounded memory growth). Zero
-	// means unbounded (no eviction — the default). When over the cap, the
-	// maintenance loop removes a batch of this node's OWNED entries (a roughly
-	// random selection), replicating each removal so backups stay consistent. It
-	// is a cache-style bound: eviction deletes the entries cluster-wide, so enable
-	// it only for maps that tolerate losing entries under pressure.
+	// MaxEntries caps how many live entries this node OWNS before it starts
+	// evicting (a soft bound to prevent unbounded memory growth). Zero means
+	// unbounded (no eviction — the default). When over the cap, the maintenance
+	// loop removes a batch of this node's owned entries (a roughly random
+	// selection), replicating each removal so backups stay consistent. The cap is
+	// on OWNED entries (backup copies cannot be evicted — the owner re-pushes them
+	// via anti-entropy), so per-node memory is bounded to about MaxEntries*(1+
+	// Backups). It is a cache-style bound: eviction deletes entries cluster-wide,
+	// so enable it only for maps that tolerate losing entries under pressure.
 	MaxEntries int
 	// Logger receives structured logs. Zero uses slog.Default().
 	Logger *slog.Logger

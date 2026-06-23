@@ -87,13 +87,15 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   expired entries read as absent (lazy) and are reclaimed by a background sweeper
   (active). TTL is replicated to backups and preserved across migration.
 - **Bounded memory (max-size eviction)** — `Config.MaxEntries` (env
-  `MEDUSA_MAX_ENTRIES`, default 0 = unbounded) sets a soft per-node entry cap.
-  When over it the maintenance loop evicts a bounded batch of the node's *owned*
-  entries (a roughly random selection — no per-access bookkeeping, so the hot
-  read path stays alloc-free), replicating each removal so backups stay
-  consistent and anti-entropy won't resurrect them. It is cache-style: eviction
-  deletes the entries cluster-wide, so enable it only where losing entries under
-  pressure is acceptable. `medusa_entries_evicted_total` counts them.
+  `MEDUSA_MAX_ENTRIES`, default 0 = unbounded) caps the entries a node *owns*.
+  When over it the maintenance loop evicts a bounded batch of owned entries (a
+  roughly random selection — no per-access bookkeeping, so the hot read path
+  stays alloc-free), replicating each removal so backups stay consistent and
+  anti-entropy won't resurrect them. The cap is on owned entries (backups can't
+  be evicted), so per-node memory is bounded to about `MaxEntries × (1+Backups)`.
+  It is cache-style: eviction deletes entries cluster-wide, so enable it only
+  where losing entries under pressure is acceptable. `medusa_entries_evicted_total`
+  counts them.
 - **Observability** — a Prometheus `GET /metrics` endpoint (hand-rolled, no
   dependency) exposes op counts, members, entries, evictions, migrations,
   anti-entropy re-pushes, and TTL sweeps; structured logs via stdlib `slog`

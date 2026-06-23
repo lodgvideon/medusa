@@ -312,6 +312,31 @@ func (s *store) countMap(name string, owned func(p int) bool) int {
 	return n
 }
 
+// countOwned returns the number of live entries in the partitions owned reports
+// true for. Eviction caps the OWNED count (not the total, which includes backup
+// copies it cannot evict), so the cap is always reachable by evicting owned
+// entries — never an over-eviction chasing a backup footprint it cannot shed.
+func (s *store) countOwned(owned func(p int) bool) int {
+	now := nowNano()
+	n := 0
+	for p := range s.shards {
+		if !owned(p) {
+			continue
+		}
+		sh := &s.shards[p]
+		sh.mu.RLock()
+		for _, inner := range sh.m {
+			for _, v := range inner {
+				if !v.expired(now) {
+					n++
+				}
+			}
+		}
+		sh.mu.RUnlock()
+	}
+	return n
+}
+
 // sampleOwned collects up to limit live entries from the partitions owned reports
 // true for, for max-size eviction. Map iteration order is unspecified, so the
 // selection is effectively random — no per-access bookkeeping, so the read hot
