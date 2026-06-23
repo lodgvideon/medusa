@@ -10,6 +10,7 @@ package medusa
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"os"
@@ -90,6 +91,14 @@ type Config struct {
 	// on start and writes one periodically and on graceful leave, so the cluster
 	// survives a whole-cluster restart. Empty disables persistence.
 	DataDir string
+	// TLS, when set, secures the inter-node transport with HTTP/2 over TLS
+	// (ALPN "h2") instead of cleartext h2c. The same config is used both when
+	// this node serves peers and when it dials them, so for mutual TLS it should
+	// carry Certificates (presented as server and client cert), RootCAs (to
+	// verify peers it dials) and ClientCAs + ClientAuth (to verify peers that
+	// dial in). Ignored when Transport is set. Advertised Addr must match a name
+	// in the certificate the peer presents.
+	TLS *tls.Config
 	// Transport overrides the default transport — tests inject an in-memory
 	// transport here. When set, Addr should match the transport's address.
 	Transport transport.Transport
@@ -104,11 +113,16 @@ func New(cfg Config) (*Node, error) {
 	}
 	tr := cfg.Transport
 	if tr == nil {
-		// Default network transport is the Poseidon HTTP/2 stack (h2c), which
-		// handles values up to its advertised ~16 MiB stream window. For larger
-		// values, inject transport.NewTCP via Transport. The transport binds to
-		// bindAddr; peers reach this node at the advertised cfg.Addr.
-		tr = transport.NewPoseidon(bindAddr)
+		// Default network transport is the Poseidon HTTP/2 stack, which handles
+		// values up to its advertised ~16 MiB stream window. For larger values,
+		// inject transport.NewTCP via Transport. The transport binds to bindAddr;
+		// peers reach this node at the advertised cfg.Addr. A TLS config upgrades
+		// the data plane from cleartext h2c to HTTP/2 over TLS.
+		if cfg.TLS != nil {
+			tr = transport.NewPoseidonTLS(bindAddr, cfg.TLS)
+		} else {
+			tr = transport.NewPoseidon(bindAddr)
+		}
 	}
 	id := cfg.ID
 	if id == "" {

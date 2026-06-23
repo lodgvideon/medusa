@@ -2,8 +2,15 @@ package medusa_test
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"os"
 	"strconv"
@@ -197,6 +204,78 @@ func TestGracefulLeavePreservesData(t *testing.T) {
 		if err != nil || !ok || len(v) != 1 || v[0] != byte(i) {
 			t.Fatalf("key %d after graceful leave: v=%v ok=%v err=%v", i, v, ok, err)
 		}
+	}
+}
+
+// testTLSConfig mints a fresh self-signed CA cert (valid for 127.0.0.1) usable
+// by both ends of a mutually-authenticated connection.
+func testTLSConfig(t *testing.T) *tls.Config {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "medusa-test"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse certificate: %v", err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+	return &tls.Config{
+		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}},
+		RootCAs:      pool,
+		ClientCAs:    pool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		MinVersion:   tls.VersionTLS12,
+	}
+}
+
+// TestClusterOverTLS forms a two-node cluster whose data plane runs over mutual
+// TLS and verifies a value written on one node is readable from the other.
+func TestClusterOverTLS(t *testing.T) {
+	cfg := testTLSConfig(t)
+	mk := func(seeds []string) *medusa.Node {
+		addr := freeAddr(t)
+		n, err := medusa.New(medusa.Config{
+			ID: addr, Addr: addr, Seeds: seeds, TLS: cfg,
+			MaintenanceInterval: 50 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatalf("New(%s): %v", addr, err)
+		}
+		t.Cleanup(func() { _ = n.Close() })
+		return n
+	}
+
+	a := mk(nil)
+	b := mk([]string{a.Addr()})
+	ctx := context.Background()
+	if err := b.Join(ctx, []string{a.Addr()}); err != nil {
+		t.Fatalf("join over TLS: %v", err)
+	}
+	awaitMembers(t, 2, a, b)
+
+	if err := a.Map("m").Put(ctx, []byte("k"), []byte("secure")); err != nil {
+		t.Fatalf("put over TLS: %v", err)
+	}
+	v, ok, err := b.Map("m").Get(ctx, []byte("k"))
+	if err != nil || !ok || string(v) != "secure" {
+		t.Fatalf("get over TLS = %q,%v,%v want \"secure\",true,nil", v, ok, err)
 	}
 }
 

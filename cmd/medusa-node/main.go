@@ -13,10 +13,17 @@
 //	                  (default: 1; values below 1 are treated as 1)
 //	MEDUSA_AUTH_TOKEN bearer token required on the admin API (except the
 //	                  /healthz and /readyz probes); unset disables auth
+//	MEDUSA_TLS_CERT   PEM cert for the inter-node transport (enables TLS with KEY)
+//	MEDUSA_TLS_KEY    PEM private key matching MEDUSA_TLS_CERT
+//	MEDUSA_TLS_CA     PEM CA bundle; when set, peers are verified against it and
+//	                  mutual TLS is required (client certs verified too)
 package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -41,12 +48,19 @@ func main() {
 	seeds := splitSeeds(os.Getenv("MEDUSA_SEEDS"))
 	backups := envInt("MEDUSA_BACKUPS", 0) // 0 → node defaults it to 1
 
+	tlsCfg, err := tlsConfigFromEnv()
+	if err != nil {
+		slog.Error("load TLS config", "err", err)
+		os.Exit(1)
+	}
+
 	// Seeds are passed to the node, whose maintenance loop retries joining until
 	// the cluster converges — so startup order does not matter. BindAddr lets a
 	// node listen on ":7700" while advertising a stable DNS name. DataDir, when
 	// set, persists a snapshot so the cluster survives a whole-cluster restart.
-	// Backups sets how many copies of each partition the cluster keeps.
-	node, err := medusa.New(medusa.Config{ID: id, Addr: addr, BindAddr: bindAddr, Seeds: seeds, DataDir: dataDir, Backups: backups})
+	// Backups sets how many copies of each partition the cluster keeps. TLS, when
+	// configured, secures the inter-node transport.
+	node, err := medusa.New(medusa.Config{ID: id, Addr: addr, BindAddr: bindAddr, Seeds: seeds, DataDir: dataDir, Backups: backups, TLS: tlsCfg})
 	if err != nil {
 		slog.Error("start node", "err", err)
 		os.Exit(1)
@@ -61,7 +75,7 @@ func main() {
 			os.Exit(1)
 		}
 	}()
-	slog.Info("node listening", "id", id, "advertise", addr, "bind", node.Addr(), "http", httpAddr, "seeds", seeds, "backups", node.BackupCount())
+	slog.Info("node listening", "id", id, "advertise", addr, "bind", node.Addr(), "http", httpAddr, "seeds", seeds, "backups", node.BackupCount(), "tls", tlsCfg != nil)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -91,6 +105,39 @@ func envInt(key string, def int) int {
 		}
 	}
 	return def
+}
+
+// tlsConfigFromEnv builds the inter-node TLS config from MEDUSA_TLS_* env vars,
+// or returns (nil, nil) to leave the transport on cleartext h2c. With a CA
+// bundle it enables mutual TLS: the same cert is presented as both server and
+// client cert, and peers in either direction are verified against the CA.
+func tlsConfigFromEnv() (*tls.Config, error) {
+	certFile, keyFile := os.Getenv("MEDUSA_TLS_CERT"), os.Getenv("MEDUSA_TLS_KEY")
+	if certFile == "" || keyFile == "" {
+		return nil, nil // TLS disabled
+	}
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load key pair: %w", err)
+	}
+	cfg := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}
+	if caFile := os.Getenv("MEDUSA_TLS_CA"); caFile != "" {
+		pem, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("read CA: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("no certificates found in %s", caFile)
+		}
+		cfg.RootCAs = pool   // verify peers this node dials
+		cfg.ClientCAs = pool // verify peers that dial in (mutual TLS)
+		cfg.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+	return cfg, nil
 }
 
 func hostname() string {

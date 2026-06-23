@@ -50,11 +50,13 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
 - **Observability** — a Prometheus `GET /metrics` endpoint (hand-rolled, no
   dependency) exposes op counts, members, entries, evictions, migrations, and
   TTL sweeps; structured logs via stdlib `slog` (JSON in the node binary).
-- **Admin-API auth** — set `MEDUSA_AUTH_TOKEN` (or `httpapi.WithToken`) to
-  require an `Authorization: Bearer <token>` header on every admin/data route;
-  the `/healthz` and `/readyz` probes stay open so the kubelet can still reach
-  them. The token is compared in constant time. (Inter-node transport TLS is on
-  the roadmap.)
+- **Security** — set `MEDUSA_AUTH_TOKEN` (or `httpapi.WithToken`) to require an
+  `Authorization: Bearer <token>` header on every admin/data route (the
+  `/healthz` and `/readyz` probes stay open for the kubelet; the token is
+  compared in constant time). The inter-node data plane can run over **mutual
+  TLS** — set `Config.TLS` (or `MEDUSA_TLS_CERT` / `MEDUSA_TLS_KEY` /
+  `MEDUSA_TLS_CA`) and node-to-node RPC upgrades from cleartext h2c to HTTP/2
+  over TLS, with peers verified in both directions.
 - **Persistence** — with `Config.DataDir` (env `MEDUSA_DATA_DIR`, a PVC in k8s)
   each node snapshots its store to disk periodically and on shutdown, and reloads
   it on start, so the cluster survives a *whole-cluster* restart (not just
@@ -68,9 +70,9 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
 - **Poseidon HTTP/2 transport** — node-to-node RPC runs over the
   [poseidon-http-client](https://github.com/lodgvideon/poseidon-http-client) /
   [poseidon-http-server](https://github.com/lodgvideon/poseidon-http-server)
-  stack (h2c, cleartext). A custom length-prefixed raw-TCP transport and an
-  in-memory transport sit behind the same interface for large payloads and
-  fast tests respectively.
+  stack (h2c cleartext by default, or HTTP/2 over TLS with `Config.TLS`). A
+  custom length-prefixed raw-TCP transport and an in-memory transport sit behind
+  the same interface for large payloads and fast tests respectively.
 
 ## Architecture
 
@@ -276,12 +278,12 @@ bash k8s/e2e.sh            # or: go test -tags k8s -run TestK8sE2E -timeout 15m 
   Poseidon client/server stack over h2c, behind the same `Transport` interface
   as the raw-TCP and in-memory implementations. Trade-off: HTTP/2 allocates
   (HPACK, framing) and a single message must fit the advertised 16 MiB stream
-  window; raw TCP remains available for anything larger.
+  window; raw TCP remains available for anything larger. Setting `Config.TLS`
+  switches the same transport to HTTP/2 over TLS (ALPN `h2`) for mutual
+  authentication between nodes, at the cost of the TLS handshake per connection.
 
 ### Roadmap
 
-- Inter-node transport TLS (the Poseidon stack supports HTTP/2 over TLS; the
-  admin API already supports bearer-token auth via `MEDUSA_AUTH_TOKEN`).
 - Write-ahead log so an ungraceful whole-cluster crash loses no acknowledged
   write (today persistence is a periodic + on-shutdown snapshot).
 - Rendezvous (HRW) partitioning to minimize data movement on membership change.

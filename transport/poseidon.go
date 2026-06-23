@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"net"
 	"net/http"
@@ -34,13 +35,14 @@ const initialWindow uint32 = 16 << 20 // 16 MiB
 // body. A handler error becomes a 500 carrying a protobuf Error, decoded back
 // into a *RemoteError so callers see the same error type as the raw transport.
 type poseidonTransport struct {
-	mu       sync.Mutex
-	addr     string
-	listener net.Listener
-	srv      *pserver.Server
-	cancel   context.CancelFunc // cancels the Serve context on Close
-	closed   bool
-	serveWG  sync.WaitGroup
+	mu        sync.Mutex
+	addr      string
+	tlsConfig *tls.Config // nil → cleartext h2c; non-nil → HTTP/2 over TLS (ALPN h2)
+	listener  net.Listener
+	srv       *pserver.Server
+	cancel    context.CancelFunc // cancels the Serve context on Close
+	closed    bool
+	serveWG   sync.WaitGroup
 
 	clientMu sync.Mutex
 	clients  map[string]*pclient.Client // one HTTP/2 client per target address
@@ -51,6 +53,28 @@ type poseidonTransport struct {
 // after Listen. A client-only transport need not call Listen.
 func NewPoseidon(addr string) Transport {
 	return &poseidonTransport{addr: addr, clients: make(map[string]*pclient.Client)}
+}
+
+// NewPoseidonTLS is like NewPoseidon but runs HTTP/2 over TLS (ALPN "h2") on
+// both ends. The one *tls.Config serves both roles a node plays: its
+// Certificates are presented as the server certificate and, for mutual TLS,
+// as the client certificate; RootCAs verify a peer this node dials; ClientCAs
+// with ClientAuth verify peers that dial in. "h2" is forced into NextProtos.
+func NewPoseidonTLS(addr string, cfg *tls.Config) Transport {
+	return &poseidonTransport{addr: addr, tlsConfig: cfg, clients: make(map[string]*pclient.Client)}
+}
+
+// withH2 clones cfg and ensures "h2" leads NextProtos, as HTTP/2 over TLS
+// requires ALPN to negotiate "h2".
+func withH2(cfg *tls.Config) *tls.Config {
+	c := cfg.Clone()
+	for _, p := range c.NextProtos {
+		if p == "h2" {
+			return c
+		}
+	}
+	c.NextProtos = append([]string{"h2"}, c.NextProtos...)
+	return c
 }
 
 func (t *poseidonTransport) Addr() string {
@@ -69,9 +93,15 @@ func (t *poseidonTransport) Listen(h Handler) error {
 	if err != nil {
 		return err
 	}
+	addr := ln.Addr().String()
+	// With TLS, wrap the listener so accepted conns complete a TLS handshake and
+	// the server speaks h2 over it directly (H2C is the cleartext-only path).
+	if t.tlsConfig != nil {
+		ln = tls.NewListener(ln, withH2(t.tlsConfig))
+	}
 	srv, err := pserver.NewServer(pserver.Options{
 		HTTPHandler: t.httpHandler(h),
-		H2C:         true,
+		H2C:         t.tlsConfig == nil,
 		ConnOpts: psconn.ServerConnOptions{
 			AdvertisedSettings: psconn.AdvertisedSettings{InitialWindowSize: initialWindow},
 		},
@@ -85,7 +115,7 @@ func (t *poseidonTransport) Listen(h Handler) error {
 	// make Serve return. We cancel this in Close.
 	ctx, cancel := context.WithCancel(context.Background())
 	t.listener = ln
-	t.addr = ln.Addr().String()
+	t.addr = addr
 	t.srv = srv
 	t.cancel = cancel
 
@@ -136,11 +166,17 @@ func (t *poseidonTransport) clientFor(addr string) (*pclient.Client, error) {
 	if c, ok := t.clients[addr]; ok {
 		return c, nil
 	}
+	scheme := "http" // h2c
+	var dialer pconn.Dialer = &pconn.PlaintextDialer{}
+	if t.tlsConfig != nil {
+		scheme = "https"
+		dialer = &pconn.TLSDialer{Config: t.tlsConfig} // verifies the peer; ALPN h2
+	}
 	c, err := pclient.NewClient(pclient.ClientOptions{
 		Addr:          addr,
-		DefaultScheme: "http", // h2c
+		DefaultScheme: scheme,
 		ConnOpts: pconn.ConnOptions{
-			Dialer:   &pconn.PlaintextDialer{},
+			Dialer:   dialer,
 			Settings: pconn.AdvertisedSettings{InitialWindowSize: initialWindow},
 		},
 	})

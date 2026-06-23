@@ -83,6 +83,15 @@ spec:
             # - name: MEDUSA_AUTH_TOKEN
             #   valueFrom:
             #     secretKeyRef: { name: medusa-auth, key: token }
+            # Optional: mutual TLS on the inter-node data plane. Mount a Secret
+            # holding tls.crt/tls.key/ca.crt at /tls and point these at it; the
+            # cert must list each pod's medusa-N.medusa DNS name as a SAN.
+            # - name: MEDUSA_TLS_CERT
+            #   value: /tls/tls.crt
+            # - name: MEDUSA_TLS_KEY
+            #   value: /tls/tls.key
+            # - name: MEDUSA_TLS_CA
+            #   value: /tls/ca.crt
           volumeMounts:
             - { name: data, mountPath: /data }
           livenessProbe:
