@@ -36,17 +36,85 @@ func newTestServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// newTestServerWithToken spins up a node behind the HTTP API guarded by a
+// bearer token.
+func newTestServerWithToken(t *testing.T, token string) *httptest.Server {
+	t.Helper()
+	sw := transport.NewSwitch()
+	node, err := medusa.New(medusa.Config{ID: "n1", Addr: "n1", Transport: sw.NewTransport("n1")})
+	if err != nil {
+		t.Fatalf("medusa.New: %v", err)
+	}
+	srv := httptest.NewServer(httpapi.New(node, httpapi.WithToken(token)))
+	t.Cleanup(func() {
+		srv.Close()
+		_ = node.Close()
+	})
+	return srv
+}
+
 func do(t *testing.T, method, url, body string) *http.Response {
+	t.Helper()
+	return doAuth(t, method, url, body, "")
+}
+
+// doAuth issues a request, adding an Authorization: Bearer header when token is
+// non-empty.
+func doAuth(t *testing.T, method, url, body, token string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(method, url, strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, url, err)
 	}
 	return resp
+}
+
+func TestTokenAuth(t *testing.T) {
+	const token = "s3cret-token"
+	srv := newTestServerWithToken(t, token)
+
+	// A data request with no token is rejected.
+	resp := do(t, http.MethodGet, srv.URL+"/v1/maps/m/k", "")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("no token: status = %d, want 401", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// A wrong token is rejected.
+	resp = doAuth(t, http.MethodGet, srv.URL+"/v1/maps/m/k", "", "nope")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("wrong token: status = %d, want 401", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// The correct token is accepted: store then read a key.
+	resp = doAuth(t, http.MethodPut, srv.URL+"/v1/maps/m/k", "v", token)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("PUT with token: status = %d, want 204", resp.StatusCode)
+	}
+	resp.Body.Close()
+	resp = doAuth(t, http.MethodGet, srv.URL+"/v1/maps/m/k", "", token)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(body) != "v" {
+		t.Errorf("GET with token: status=%d body=%q, want 200 \"v\"", resp.StatusCode, body)
+	}
+
+	// Liveness/readiness probes stay open so the kubelet can reach them.
+	for _, path := range []string{"/healthz", "/readyz"} {
+		resp = do(t, http.MethodGet, srv.URL+path, "")
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("probe %s without token: status = %d, want 200", path, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
 }
 
 func TestHealthAndReady(t *testing.T) {

@@ -77,6 +77,12 @@ spec:
             # Persist snapshots so the cluster survives a whole-cluster restart.
             - name: MEDUSA_DATA_DIR
               value: /data
+            # Optional: require a bearer token on the admin API (the /healthz and
+            # /readyz probes stay open). Supply it from a Secret, e.g.:
+            #   kubectl create secret generic medusa-auth --from-literal=token=...
+            # - name: MEDUSA_AUTH_TOKEN
+            #   valueFrom:
+            #     secretKeyRef: { name: medusa-auth, key: token }
           volumeMounts:
             - { name: data, mountPath: /data }
           livenessProbe:

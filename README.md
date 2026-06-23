@@ -50,6 +50,11 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
 - **Observability** — a Prometheus `GET /metrics` endpoint (hand-rolled, no
   dependency) exposes op counts, members, entries, evictions, migrations, and
   TTL sweeps; structured logs via stdlib `slog` (JSON in the node binary).
+- **Admin-API auth** — set `MEDUSA_AUTH_TOKEN` (or `httpapi.WithToken`) to
+  require an `Authorization: Bearer <token>` header on every admin/data route;
+  the `/healthz` and `/readyz` probes stay open so the kubelet can still reach
+  them. The token is compared in constant time. (Inter-node transport TLS is on
+  the roadmap.)
 - **Persistence** — with `Config.DataDir` (env `MEDUSA_DATA_DIR`, a PVC in k8s)
   each node snapshots its store to disk periodically and on shutdown, and reloads
   it on start, so the cluster survives a *whole-cluster* restart (not just
@@ -275,10 +280,12 @@ bash k8s/e2e.sh            # or: go test -tags k8s -run TestK8sE2E -timeout 15m 
 
 ### Roadmap
 
+- Inter-node transport TLS (the Poseidon stack supports HTTP/2 over TLS; the
+  admin API already supports bearer-token auth via `MEDUSA_AUTH_TOKEN`).
+- Write-ahead log so an ungraceful whole-cluster crash loses no acknowledged
+  write (today persistence is a periodic + on-shutdown snapshot).
 - Rendezvous (HRW) partitioning to minimize data movement on membership change.
-- Read-repair / anti-entropy to re-sync replicas that diverged during a failure
-  (the backup count itself is now configurable via `Config.Backups`).
+- Read-repair / anti-entropy to re-sync replicas that diverged during a failure.
 - Intern map names (or use integer map handles) to make the remote read path
   fully zero-alloc.
 - Phi-accrual failure detection with a background heartbeat loop.
-- Distributed compute (EntryProcessor / ExecutorService) on top of routing.

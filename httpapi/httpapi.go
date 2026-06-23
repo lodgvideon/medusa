@@ -4,6 +4,7 @@
 package httpapi
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,17 +14,38 @@ import (
 	"github.com/lodgvideon/medusa/metrics"
 )
 
+// Option configures the HTTP API.
+type Option func(*config)
+
+type config struct {
+	token string
+}
+
+// WithToken requires every request except the liveness/readiness probes to
+// carry an "Authorization: Bearer <token>" header. The probes stay open so a
+// Kubernetes kubelet can still check health without credentials. An empty token
+// disables authentication (the default).
+func WithToken(token string) Option {
+	return func(c *config) { c.token = token }
+}
+
 // New returns an http.Handler serving:
 //
-//	GET    /healthz                  liveness — always 200 while serving
-//	GET    /readyz                   readiness — 200 once the node has members
+//	GET    /healthz                  liveness — always 200 while serving (unauthenticated)
+//	GET    /readyz                   readiness — 200 once the node has members (unauthenticated)
 //	GET    /metrics                  Prometheus metrics (text exposition format)
 //	GET    /stats                    JSON {members, localEntries, backups}
 //	GET    /members                  JSON array of cluster members
 //	GET    /v1/maps/{map}/{key}      fetch a value (404 if absent)
 //	PUT    /v1/maps/{map}/{key}      store the request body as the value
 //	DELETE /v1/maps/{map}/{key}      remove a key (404 if absent)
-func New(node *medusa.Node) http.Handler {
+//
+// Pass WithToken to require bearer-token auth on every route but the probes.
+func New(node *medusa.Node, opts ...Option) http.Handler {
+	var cfg config
+	for _, o := range opts {
+		o(&cfg)
+	}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -140,7 +162,32 @@ func New(node *medusa.Node) http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	return mux
+	if cfg.token == "" {
+		return mux
+	}
+	return requireToken(cfg.token, mux)
+}
+
+// requireToken wraps h so every request but the unauthenticated probes must
+// present "Authorization: Bearer <token>". The token is compared in constant
+// time to avoid leaking it through response-timing differences.
+func requireToken(token string, h http.Handler) http.Handler {
+	want := []byte(token)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+			h.ServeHTTP(w, r) // probes stay open for the kubelet
+			return
+		}
+		const prefix = "Bearer "
+		got := r.Header.Get("Authorization")
+		if len(got) < len(prefix) || got[:len(prefix)] != prefix ||
+			subtle.ConstantTimeCompare([]byte(got[len(prefix):]), want) != 1 {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			writeText(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 type member struct {

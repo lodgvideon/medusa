@@ -11,6 +11,8 @@
 //	MEDUSA_SEEDS      comma-separated seed addresses to join (optional)
 //	MEDUSA_BACKUPS    backup copies per partition / replication factor − 1
 //	                  (default: 1; values below 1 are treated as 1)
+//	MEDUSA_AUTH_TOKEN bearer token required on the admin API (except the
+//	                  /healthz and /readyz probes); unset disables auth
 package main
 
 import (
@@ -50,7 +52,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	srv := &http.Server{Addr: httpAddr, Handler: httpapi.New(node)}
+	// MEDUSA_AUTH_TOKEN, when set, requires a bearer token on the admin API
+	// (WithToken("") is a no-op, so passing it unconditionally is safe).
+	srv := &http.Server{Addr: httpAddr, Handler: httpapi.New(node, httpapi.WithToken(os.Getenv("MEDUSA_AUTH_TOKEN")))}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("http server", "err", err)
