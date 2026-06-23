@@ -113,34 +113,39 @@ func (w *wal) close() error {
 }
 
 // replayWAL reads every intact record from the log at path in order, invoking
-// put or del for each. A missing file is not an error (first start). Reading
-// stops cleanly at the first torn or corrupt record — the tail of an
-// interrupted write — since such a record was never acknowledged.
-func replayWAL(path string, put func(name string, key, value []byte, expireAt int64), del func(name string, key []byte)) error {
+// put or del for each. It returns the byte length of the valid prefix — the
+// offset just past the last fully-applied record — so the caller can chop a
+// torn or corrupt tail (the remnant of an interrupted write) and keep the log
+// contiguous; otherwise records appended after that remnant would be unreadable
+// on a later replay. A missing file is not an error (first start). Reading stops
+// cleanly at the first torn or corrupt record, since such a record was never
+// acknowledged.
+func replayWAL(path string, put func(name string, key, value []byte, expireAt int64), del func(name string, key []byte)) (int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return 0, nil
 		}
-		return err
+		return 0, err
 	}
 	defer f.Close()
 
 	r := bufio.NewReader(f)
+	var valid int64
 	var hdr [5]byte
 	for {
 		if _, err := io.ReadFull(r, hdr[:]); err != nil {
-			return nil // clean EOF or torn header: end of the usable log
+			return valid, nil // clean EOF or torn header: end of the usable log
 		}
 		n := binary.BigEndian.Uint32(hdr[:4])
 		op := hdr[4]
 		payload := make([]byte, n)
 		if _, err := io.ReadFull(r, payload); err != nil {
-			return nil // torn final record: stop
+			return valid, nil // torn final record: stop at the last good one
 		}
 		var e medusav1.SnapshotEntry
 		if err := e.UnmarshalVT(payload); err != nil {
-			return nil // corrupt record: stop
+			return valid, nil // corrupt record: stop
 		}
 		switch op {
 		case walOpPut:
@@ -148,5 +153,23 @@ func replayWAL(path string, put func(name string, key, value []byte, expireAt in
 		case walOpRemove:
 			del(e.Map, e.Key)
 		}
+		valid += int64(len(hdr)) + int64(n)
 	}
+}
+
+// truncateTail trims the file at path to validLen bytes when it is longer,
+// dropping a torn or corrupt tail left by an interrupted write. A missing file
+// is a no-op.
+func truncateTail(path string, validLen int64) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.Size() <= validLen {
+		return nil
+	}
+	return os.Truncate(path, validLen)
 }

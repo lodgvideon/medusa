@@ -214,6 +214,16 @@ func (n *Node) maintain(ctx context.Context, interval time.Duration) {
 				n.lastMigratedVersion = v
 				metrics.Migrations.Add(1)
 				n.log.Info("rebalanced partitions", "version", v, "members", len(n.mem.Members()))
+				// Checkpoint immediately after a rebalance so the snapshot and WAL
+				// reflect the dropped partitions; otherwise a crash before the next
+				// periodic snapshot would replay writes for partitions this node no
+				// longer owns and could re-push that stale data on rejoin.
+				if n.dataDir != "" {
+					if err := n.saveSnapshot(); err != nil {
+						n.log.Warn("post-rebalance snapshot failed", "err", err)
+					}
+					n.lastSaveNano = time.Now().UnixNano()
+				}
 			}
 			// Reclaim expired entries (lazy expiry already hides them on read).
 			if swept := n.maps.SweepExpired(); swept > 0 {

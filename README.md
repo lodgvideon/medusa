@@ -287,6 +287,9 @@ bash k8s/e2e.sh            # or: go test -tags k8s -run TestK8sE2E -timeout 15m 
 
 ### Roadmap
 
+- Group-commit for the write-ahead log: it currently fsyncs on every write
+  (durability over throughput), so batching concurrent writes into one fsync
+  would raise write throughput without weakening the guarantee.
 - Rendezvous (HRW) partitioning to minimize data movement on membership change.
 - Read-repair / anti-entropy to re-sync replicas that diverged during a failure.
 - Intern map names (or use integer map handles) to make the remote read path

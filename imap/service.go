@@ -349,7 +349,7 @@ func (s *Service) Restore(snap *medusav1.Snapshot) {
 // expired are skipped.
 func (s *Service) OpenWAL(path string) error {
 	now := nowNano()
-	err := replayWAL(path,
+	valid, err := replayWAL(path,
 		func(name string, key, value []byte, expireAt int64) {
 			if expireAt != 0 && expireAt <= now {
 				return // expired while we were down
@@ -361,6 +361,11 @@ func (s *Service) OpenWAL(path string) error {
 		},
 	)
 	if err != nil {
+		return err
+	}
+	// Chop any torn/corrupt tail so future appends stay contiguous; otherwise a
+	// later replay would stop at the remnant and miss everything after it.
+	if err := truncateTail(path, valid); err != nil {
 		return err
 	}
 	w, err := openWAL(path)

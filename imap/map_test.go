@@ -223,6 +223,26 @@ func BenchmarkMapGetLocal(b *testing.B) {
 	}
 }
 
+func BenchmarkMapPutLocal(b *testing.B) {
+	sw := transport.NewSwitch()
+	tr := sw.NewTransport("a")
+	mem := cluster.New(cluster.Member{ID: "a", Addr: "a"}, tr, 1)
+	svc := imap.NewService(mem, tr)
+	_ = tr.Listen(dispatch(mem, svc))
+	defer tr.Close()
+
+	ctx := context.Background()
+	m := svc.Map("data")
+	key := []byte("hot-key")
+	val := []byte("a-cache-value-payload")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = m.Put(ctx, key, val)
+	}
+}
+
 // findDistinctKey returns a key whose owner and backup are two different nodes.
 func findDistinctKey(n *node) (key []byte, ownerID, backupID string) {
 	for i := 0; i < 100000; i++ {

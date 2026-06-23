@@ -119,7 +119,7 @@ func TestWALReplayStopsAtTornRecord(t *testing.T) {
 	_ = f.Close()
 
 	got := map[string]string{}
-	if err := replayWAL(path,
+	if _, err := replayWAL(path,
 		func(_ string, k, v []byte, _ int64) { got[string(k)] = string(v) },
 		func(_ string, k []byte) { delete(got, string(k)) },
 	); err != nil {
@@ -186,7 +186,7 @@ func TestWALReplaySkipsCorruptRecord(t *testing.T) {
 	_ = f.Close()
 
 	got := map[string]string{}
-	if err := replayWAL(path,
+	if _, err := replayWAL(path,
 		func(_ string, k, v []byte, _ int64) { got[string(k)] = string(v) },
 		func(_ string, k []byte) { delete(got, string(k)) },
 	); err != nil {
@@ -238,6 +238,78 @@ func TestServiceWALDisabled(t *testing.T) {
 	}
 	if captured != 1 {
 		t.Fatalf("checkpoint captured %d entries, want 1", captured)
+	}
+}
+
+// BenchmarkWALAppend measures the cost of one durable (fsync'd) log append —
+// the per-write overhead of enabling persistence. fsync dominates, so this is
+// far slower than the in-memory write itself; it quantifies the durability
+// trade-off rather than a hot in-memory path.
+func BenchmarkWALAppend(b *testing.B) {
+	w, err := openWAL(filepath.Join(b.TempDir(), "wal.log"))
+	if err != nil {
+		b.Fatalf("open wal: %v", err)
+	}
+	defer w.close()
+	key := []byte("hot-key")
+	val := []byte("a-cache-value-payload")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := w.appendPut("m", key, val, 0); err != nil {
+			b.Fatalf("append: %v", err)
+		}
+	}
+}
+
+// TestWALOpenChopsTornTail proves OpenWAL trims a torn tail so a write appended
+// afterwards is not shadowed by the remnant on a later replay (the double-crash
+// durability window).
+func TestWALOpenChopsTornTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+
+	// One good record followed by a torn tail (a header promising bytes that
+	// never arrive), as an interrupted append would leave.
+	w, err := openWAL(path)
+	if err != nil {
+		t.Fatalf("open wal: %v", err)
+	}
+	if err := w.appendPut("m", []byte("first"), []byte("1"), 0); err != nil {
+		t.Fatalf("append first: %v", err)
+	}
+	if err := w.close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if _, err := f.Write([]byte{0, 0, 0, 9, walOpPut}); err != nil {
+		t.Fatalf("write torn tail: %v", err)
+	}
+	_ = f.Close()
+
+	// First restart: replay "first", chop the torn tail, then append "second".
+	s1 := svcWith(&fakeTransport{})
+	if err := s1.OpenWAL(path); err != nil {
+		t.Fatalf("open wal s1: %v", err)
+	}
+	mustPut(t, s1, "m", "second", "2")
+	if err := s1.CloseWAL(); err != nil {
+		t.Fatalf("close wal s1: %v", err)
+	}
+
+	// Second restart must recover BOTH records.
+	s2 := svcWith(&fakeTransport{})
+	if err := s2.OpenWAL(path); err != nil {
+		t.Fatalf("open wal s2: %v", err)
+	}
+	defer s2.CloseWAL()
+	for _, kv := range []struct{ k, v string }{{"first", "1"}, {"second", "2"}} {
+		if got, ok := s2.store.get(partition.For([]byte(kv.k)), "m", []byte(kv.k)); !ok || string(got) != kv.v {
+			t.Fatalf("%q after torn-tail recovery = %q,%v, want %q", kv.k, got, ok, kv.v)
+		}
 	}
 }
 
