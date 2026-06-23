@@ -34,9 +34,11 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   HTTP: `POST /v1/maps/{m}/{k}/execute?proc=incr`.
 - **Replication (configurable factor)** — every write is synchronously copied to
   `Backups` distinct backup owners (default 1; env `MEDUSA_BACKUPS`). A cluster
-  tolerates that many simultaneous holder failures with no data loss; reads and
-  writes transparently fail over to a backup when the primary is unreachable.
-  The factor is capped to however many distinct backups the cluster can supply.
+  tolerates that many simultaneous holder failures with no data loss: when the
+  owner is unreachable, reads and writes transparently fail over through the
+  backups in replica order until one responds, so losing the owner *and* the
+  first backup still succeeds when a second backup exists. The factor is capped
+  to however many distinct backups the cluster can supply.
 - **Elastic scaling** — when a node joins, the partitions it now owns migrate to
   it automatically (verified in k8s: scaling 3→5 redistributes data and the new
   pods serve their share).

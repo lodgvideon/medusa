@@ -223,6 +223,108 @@ func BenchmarkMapGetLocal(b *testing.B) {
 	}
 }
 
+// TestMultiBackupFailover proves that with two backups a read survives the loss
+// of BOTH the owner and the first backup — served from the second backup, before
+// any failure detection or rebalance. No maintenance loop runs here, so the
+// partition table is frozen and the failover path is exercised directly.
+func TestMultiBackupFailover(t *testing.T) {
+	sw := transport.NewSwitch()
+	const backups = 2
+	ids := []string{"a", "b", "c", "d"}
+	nodes := map[string]*node{}
+	mk := func(id string) *node {
+		tr := sw.NewTransport(id)
+		mem := cluster.New(cluster.Member{ID: id, Addr: id}, tr, backups)
+		svc := imap.NewService(mem, tr)
+		if err := tr.Listen(dispatch(mem, svc)); err != nil {
+			t.Fatalf("listen %s: %v", id, err)
+		}
+		n := &node{id: id, mem: mem, svc: svc, tr: tr}
+		t.Cleanup(func() { _ = tr.Close() })
+		return n
+	}
+	for _, id := range ids {
+		nodes[id] = mk(id)
+	}
+	ctx := context.Background()
+	for _, id := range ids[1:] {
+		if err := nodes[id].mem.Join(ctx, []string{"a"}); err != nil {
+			t.Fatalf("join %s: %v", id, err)
+		}
+	}
+	for _, id := range ids {
+		if got := len(nodes[id].mem.Members()); got != 4 {
+			t.Fatalf("node %s sees %d members, want 4", id, got)
+		}
+	}
+
+	// Find a key whose partition has an owner and two distinct backups.
+	var key []byte
+	var ownerID, backup0, backup1 string
+	tbl := nodes["a"].mem.Table()
+	for i := 0; i < 100000; i++ {
+		k := []byte{byte(i), byte(i >> 8), byte(i >> 16)}
+		p := partition.For(k)
+		o := tbl.OwnerOf(p)
+		b0, ok0 := tbl.BackupAt(p, 0)
+		b1, ok1 := tbl.BackupAt(p, 1)
+		if o != "" && ok0 && ok1 {
+			key, ownerID, backup0, backup1 = k, o, b0, b1
+			break
+		}
+	}
+	if key == nil {
+		t.Fatal("no key with two backups found")
+	}
+
+	// Read through the one node that holds no replica of this key, so every
+	// operation goes over the network and exercises the failover path.
+	var reader string
+	for _, id := range ids {
+		if id != ownerID && id != backup0 && id != backup1 {
+			reader = id
+			break
+		}
+	}
+	rm := nodes[reader].svc.Map("m")
+
+	// Write through the owner; replication is synchronous to both backups.
+	if err := nodes[ownerID].svc.Map("m").Put(ctx, key, []byte("v")); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	// Kill the owner and the first backup; the second backup must carry every op.
+	_ = nodes[ownerID].tr.Close()
+	_ = nodes[backup0].tr.Close()
+
+	if v, ok, err := rm.Get(ctx, key); err != nil || !ok || string(v) != "v" {
+		t.Fatalf("Get failover = %q,%v,%v, want \"v\",true,nil (via backup1=%s)", v, ok, err, backup1)
+	}
+	out, err := rm.Execute(ctx, key, "append", []byte("x"))
+	if err != nil || string(out) != "vx" {
+		t.Fatalf("Execute failover = %q,%v, want \"vx\",nil", out, err)
+	}
+	if err := rm.Put(ctx, key, []byte("v2")); err != nil {
+		t.Fatalf("Put failover: %v", err)
+	}
+	if v, ok, err := rm.Get(ctx, key); err != nil || !ok || string(v) != "v2" {
+		t.Fatalf("Get after Put failover = %q,%v,%v, want \"v2\",true,nil", v, ok, err)
+	}
+	if existed, err := rm.Remove(ctx, key); err != nil || !existed {
+		t.Fatalf("Remove failover = %v,%v, want true,nil", existed, err)
+	}
+
+	// Now kill the last backup too: with no holder reachable, ops surface the
+	// transport error rather than a false "not found".
+	_ = nodes[backup1].tr.Close()
+	if _, _, err := rm.Get(ctx, key); err == nil {
+		t.Fatal("Get with all holders down should return an error, not absent")
+	}
+	if err := rm.Put(ctx, key, []byte("v3")); err == nil {
+		t.Fatal("Put with all holders down should return an error")
+	}
+}
+
 func BenchmarkMapPutLocal(b *testing.B) {
 	sw := transport.NewSwitch()
 	tr := sw.NewTransport("a")
