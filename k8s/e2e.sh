@@ -147,6 +147,20 @@ else
   bad "EntryProcessor -> $out"
 fi
 
+# ---- test: coordination primitive (putIfAbsent) ----
+# First put-if-absent stores; a second with a different value must be a no-op, so
+# a cross-pod GET still returns the first writer's value.
+echo "=== test: putIfAbsent (distributed lock primitive) ==="
+out=$(incluster '
+  curl -s -o /dev/null -X POST --data-binary first  "medusa-0.medusa:8080/v1/maps/g/lockkey/execute?proc=putifabsent"
+  curl -s -o /dev/null -X POST --data-binary second "medusa-2.medusa:8080/v1/maps/g/lockkey/execute?proc=putifabsent"
+  curl -s medusa-1.medusa:8080/v1/maps/g/lockkey')
+if [ "$out" = "first" ]; then
+  ok "putIfAbsent stored once; the racing put-if-absent was a no-op"
+else
+  bad "putIfAbsent -> $out (want \"first\")"
+fi
+
 # ---- test: scale-out migration (3 -> 5) ----
 echo "=== test: scale-out migration ==="
 kubectl scale statefulset/medusa --replicas=5 >/dev/null

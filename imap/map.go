@@ -199,6 +199,31 @@ func (mp *Map) Execute(ctx context.Context, key []byte, processor string, arg []
 	return nil, err
 }
 
+// PutIfAbsent atomically stores value under key only if the key is currently
+// absent, returning whether it was stored. It runs as a processor on the owner
+// (atomic read-modify-write under the shard lock) and the result is replicated,
+// so it is a correct distributed primitive for locks and leader election: a
+// caller that gets true holds the key.
+func (mp *Map) PutIfAbsent(ctx context.Context, key, value []byte) (bool, error) {
+	out, err := mp.Execute(ctx, key, "putifabsent", value)
+	if err != nil {
+		return false, err
+	}
+	return len(out) == 1 && out[0] == 1, nil
+}
+
+// CompareAndSwap atomically sets key to newVal only if it currently exists with
+// a value equal to expected, returning whether the swap happened. It is the
+// optimistic-concurrency primitive (compare-and-set). To create an absent key,
+// use PutIfAbsent.
+func (mp *Map) CompareAndSwap(ctx context.Context, key, expected, newVal []byte) (bool, error) {
+	out, err := mp.Execute(ctx, key, "cas", encodeCAS(expected, newVal))
+	if err != nil {
+		return false, err
+	}
+	return len(out) == 1 && out[0] == 1, nil
+}
+
 // Remove deletes key, returning whether it existed.
 func (mp *Map) Remove(ctx context.Context, key []byte) (bool, error) {
 	metrics.RemoveOps.Add(1)

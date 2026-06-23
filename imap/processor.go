@@ -1,6 +1,7 @@
 package imap
 
 import (
+	"bytes"
 	"encoding/binary"
 	"sync"
 )
@@ -27,10 +28,12 @@ type Processor func(cur []byte, exists bool, arg []byte) (newVal []byte, action 
 var (
 	procMu     sync.RWMutex
 	processors = map[string]Processor{
-		"incr":   incrProc,
-		"append": appendProc,
-		"getset": getsetProc,
-		"delete": deleteProc,
+		"incr":        incrProc,
+		"append":      appendProc,
+		"getset":      getsetProc,
+		"delete":      deleteProc,
+		"putifabsent": putIfAbsentProc,
+		"cas":         casProc,
 	}
 )
 
@@ -81,6 +84,52 @@ func deleteProc(cur []byte, exists bool, _ []byte) ([]byte, Action, []byte) {
 		return nil, Keep, nil
 	}
 	return nil, Delete, append([]byte(nil), cur...)
+}
+
+// putIfAbsentProc stores arg only if the key is currently absent. It returns a
+// single byte: 1 if the value was stored, 0 if the key already existed. This is
+// the atomic distributed putIfAbsent — a building block for distributed locks
+// (a caller that gets 1 "holds" the lock key) and leader election.
+func putIfAbsentProc(cur []byte, exists bool, arg []byte) ([]byte, Action, []byte) {
+	if exists {
+		return nil, Keep, []byte{0}
+	}
+	return append([]byte(nil), arg...), Set, []byte{1}
+}
+
+// casProc is an atomic compare-and-swap: arg packs (expected, new) — see
+// encodeCAS — and the entry is set to new only if it currently exists with a
+// value equal to expected. It returns 1 if the swap happened, 0 otherwise. This
+// is the optimistic-concurrency / compare-and-set primitive. (To go from absent
+// to present, use putifabsent instead.)
+func casProc(cur []byte, exists bool, arg []byte) ([]byte, Action, []byte) {
+	expected, newVal, ok := splitCAS(arg)
+	if !ok || !exists || !bytes.Equal(cur, expected) {
+		return nil, Keep, []byte{0}
+	}
+	return append([]byte(nil), newVal...), Set, []byte{1}
+}
+
+// encodeCAS packs an (expected, new) pair into a single "cas" processor arg as
+// [big-endian uint32 len(expected)][expected][new].
+func encodeCAS(expected, newVal []byte) []byte {
+	buf := make([]byte, 4+len(expected)+len(newVal))
+	binary.BigEndian.PutUint32(buf, uint32(len(expected)))
+	copy(buf[4:], expected)
+	copy(buf[4+len(expected):], newVal)
+	return buf
+}
+
+// splitCAS is the inverse of encodeCAS. ok is false for a malformed arg.
+func splitCAS(arg []byte) (expected, newVal []byte, ok bool) {
+	if len(arg) < 4 {
+		return nil, nil, false
+	}
+	n := binary.BigEndian.Uint32(arg[:4])
+	if uint64(n) > uint64(len(arg)-4) {
+		return nil, nil, false
+	}
+	return arg[4 : 4+n], arg[4+n:], true
 }
 
 func readInt64(b []byte) int64 {

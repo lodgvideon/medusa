@@ -32,6 +32,12 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   has no lost updates under concurrency — no data movement, one round trip.
   Built-ins: `incr`, `append`, `getset`, `delete`; register your own. Also over
   HTTP: `POST /v1/maps/{m}/{k}/execute?proc=incr`.
+- **Atomic coordination primitives** — built on the same atomic owner-side
+  read-modify-write: `Map.PutIfAbsent(key, value)` stores only if the key is
+  absent (returns whether it won — a distributed-lock / leader-election building
+  block), and `Map.CompareAndSwap(key, expected, new)` sets only if the current
+  value matches (optimistic concurrency / compare-and-set). Both are exposed as
+  the `putifabsent` and `cas` processors too.
 - **Replication (configurable factor)** — every write is synchronously copied to
   `Backups` distinct backup owners (default 1; env `MEDUSA_BACKUPS`). A cluster
   tolerates that many simultaneous holder failures with no data loss: when the

@@ -9,6 +9,42 @@ import (
 	"github.com/lodgvideon/medusa/partition"
 )
 
+// TestPutIfAbsentProc covers the absent→store (1) and present→keep (0) cases.
+func TestPutIfAbsentProc(t *testing.T) {
+	nv, a, out := putIfAbsentProc(nil, false, []byte("v"))
+	if a != Set || string(nv) != "v" || len(out) != 1 || out[0] != 1 {
+		t.Fatalf("absent: nv=%q action=%v out=%v; want set,\"v\",[1]", nv, a, out)
+	}
+	_, a, out = putIfAbsentProc([]byte("x"), true, []byte("v"))
+	if a != Keep || len(out) != 1 || out[0] != 0 {
+		t.Fatalf("present: action=%v out=%v; want keep,[0]", a, out)
+	}
+}
+
+// TestCASProc covers compare-and-swap: match swaps, mismatch/absent/malformed
+// leave the entry unchanged, and the arg encoding round-trips binary values.
+func TestCASProc(t *testing.T) {
+	arg := encodeCAS([]byte("old"), []byte("new"))
+
+	nv, a, out := casProc([]byte("old"), true, arg)
+	if a != Set || string(nv) != "new" || out[0] != 1 {
+		t.Fatalf("match: nv=%q action=%v out=%v; want set,\"new\",[1]", nv, a, out)
+	}
+	if _, a, out = casProc([]byte("other"), true, arg); a != Keep || out[0] != 0 {
+		t.Fatalf("mismatch: action=%v out=%v; want keep,[0]", a, out)
+	}
+	if _, a, out = casProc(nil, false, arg); a != Keep || out[0] != 0 {
+		t.Fatalf("absent: action=%v out=%v; want keep,[0]", a, out)
+	}
+	if _, a, out = casProc([]byte("old"), true, []byte{0x00}); a != Keep || out[0] != 0 {
+		t.Fatalf("malformed arg: action=%v out=%v; want keep,[0]", a, out)
+	}
+	exp, nw, ok := splitCAS(encodeCAS([]byte("a\x00b"), []byte("c\x00d")))
+	if !ok || string(exp) != "a\x00b" || string(nw) != "c\x00d" {
+		t.Fatalf("encode/split round-trip: exp=%q new=%q ok=%v", exp, nw, ok)
+	}
+}
+
 // TestRegisterAndExecuteCustomProcessor covers custom processor registration and
 // the execute path end to end, including its write-ahead-log records for both a
 // Set (the custom processor) and a Delete (the built-in "delete"), plus the

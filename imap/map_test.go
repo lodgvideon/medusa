@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,6 +88,66 @@ func ownerBackup(n *node, key []byte) (owner, backup string) {
 	owner = tbl.OwnerOf(p)
 	backup, _ = tbl.BackupOf(p)
 	return owner, backup
+}
+
+// TestPutIfAbsentAndCASDistributed proves the coordination primitives route to
+// the owner and behave correctly when invoked from different nodes: a put-if-
+// absent succeeds once, a racing one from another node fails, and compare-and-
+// swap honours the expected value.
+func TestPutIfAbsentAndCASDistributed(t *testing.T) {
+	f := newFixture()
+	a, b, c := f.cluster3(t)
+	ctx := context.Background()
+	key := []byte("lock")
+
+	if ok, err := a.svc.Map("coord").PutIfAbsent(ctx, key, []byte("a")); err != nil || !ok {
+		t.Fatalf("first PutIfAbsent = %v,%v; want true,nil", ok, err)
+	}
+	if ok, err := b.svc.Map("coord").PutIfAbsent(ctx, key, []byte("b")); err != nil || ok {
+		t.Fatalf("racing PutIfAbsent = %v,%v; want false,nil", ok, err)
+	}
+	if v, _, _ := c.svc.Map("coord").Get(ctx, key); string(v) != "a" {
+		t.Fatalf("value after PutIfAbsent = %q; want \"a\"", v)
+	}
+	if ok, err := c.svc.Map("coord").CompareAndSwap(ctx, key, []byte("a"), []byte("c")); err != nil || !ok {
+		t.Fatalf("CAS (match) = %v,%v; want true,nil", ok, err)
+	}
+	if v, _, _ := a.svc.Map("coord").Get(ctx, key); string(v) != "c" {
+		t.Fatalf("value after CAS = %q; want \"c\"", v)
+	}
+	if ok, err := b.svc.Map("coord").CompareAndSwap(ctx, key, []byte("WRONG"), []byte("x")); err != nil || ok {
+		t.Fatalf("CAS (mismatch) = %v,%v; want false,nil", ok, err)
+	}
+	if v, _, _ := b.svc.Map("coord").Get(ctx, key); string(v) != "c" {
+		t.Fatalf("value after failed CAS = %q; want \"c\"", v)
+	}
+}
+
+// TestPutIfAbsentSingleWinner proves the lock guarantee: under many concurrent
+// PutIfAbsent calls across all three nodes for the same key, exactly one wins.
+func TestPutIfAbsentSingleWinner(t *testing.T) {
+	f := newFixture()
+	a, b, c := f.cluster3(t)
+	ctx := context.Background()
+	key := []byte("once")
+	nodes := []*node{a, b, c}
+
+	var wins int64
+	var wg sync.WaitGroup
+	for i := 0; i < 30; i++ {
+		wg.Add(1)
+		n := nodes[i%3]
+		go func() {
+			defer wg.Done()
+			if ok, err := n.svc.Map("coord").PutIfAbsent(ctx, key, []byte("v")); err == nil && ok {
+				atomic.AddInt64(&wins, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	if wins != 1 {
+		t.Fatalf("PutIfAbsent winners = %d; want exactly 1", wins)
+	}
 }
 
 func TestPutGetAcrossNodes(t *testing.T) {
