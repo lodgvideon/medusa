@@ -185,6 +185,38 @@ func TestFencedLockDistributed(t *testing.T) {
 	}
 }
 
+// TestMapSizeDistributed proves the cluster-wide Size scatter-gather: it totals
+// every entry exactly once (no backup double-counting), is consistent from any
+// node, and is per-map.
+func TestMapSizeDistributed(t *testing.T) {
+	f := newFixture()
+	a, b, c := f.cluster3(t)
+	ctx := context.Background()
+
+	if n, err := a.svc.Map("sized").Size(ctx); err != nil || n != 0 {
+		t.Fatalf("empty Size = %d,%v; want 0,nil", n, err)
+	}
+
+	const N = 50
+	for i := 0; i < N; i++ {
+		if err := a.svc.Map("sized").Put(ctx, []byte{byte(i), byte(i >> 8)}, []byte("v")); err != nil {
+			t.Fatalf("put %d: %v", i, err)
+		}
+	}
+	// Every node sees the same cluster-wide total — each entry counted once by its
+	// owner, backup copies excluded.
+	for _, n := range []*node{a, b, c} {
+		got, err := n.svc.Map("sized").Size(ctx)
+		if err != nil || got != N {
+			t.Fatalf("Size from %s = %d,%v; want %d,nil", n.id, got, err, N)
+		}
+	}
+	// Counts are per-map.
+	if got, _ := b.svc.Map("other").Size(ctx); got != 0 {
+		t.Fatalf("unrelated map Size = %d; want 0", got)
+	}
+}
+
 func TestPutGetAcrossNodes(t *testing.T) {
 	f := newFixture()
 	a, b, c := f.cluster3(t)

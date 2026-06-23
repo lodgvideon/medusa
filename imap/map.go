@@ -291,6 +291,34 @@ func (mp *Map) Unlock(ctx context.Context, key, holder []byte) (bool, error) {
 	return len(out) == 1 && out[0] == 1, nil
 }
 
+// Size returns the total number of live entries in the map across the whole
+// cluster. It is a scatter-gather: every member counts the entries it owns and
+// the counts are summed, so each entry is counted exactly once (a backup copy is
+// never counted). The result is approximate during a rebalance, when ownership is
+// briefly in flux. If a member is unreachable its share is omitted and the error
+// is non-nil — the returned count is then a lower bound over the reachable members.
+func (mp *Map) Size(ctx context.Context) (uint64, error) {
+	var (
+		total    uint64
+		firstErr error
+	)
+	for _, m := range mp.svc.mem.Members() {
+		if m.ID == mp.svc.self {
+			total += uint64(mp.svc.localMapSize(mp.name))
+			continue
+		}
+		c, err := mp.svc.sendSize(ctx, m.Addr, mp.name)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		total += c
+	}
+	return total, firstErr
+}
+
 // Remove deletes key, returning whether it existed.
 func (mp *Map) Remove(ctx context.Context, key []byte) (bool, error) {
 	metrics.RemoveOps.Add(1)

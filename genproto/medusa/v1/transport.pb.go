@@ -45,6 +45,8 @@ const (
 	MessageType_MESSAGE_TYPE_EXECUTE_RESPONSE MessageType = 14
 	MessageType_MESSAGE_TYPE_DIGEST_REQUEST   MessageType = 15
 	MessageType_MESSAGE_TYPE_DIGEST_RESPONSE  MessageType = 16
+	MessageType_MESSAGE_TYPE_SIZE_REQUEST     MessageType = 17
+	MessageType_MESSAGE_TYPE_SIZE_RESPONSE    MessageType = 18
 )
 
 // Enum value maps for MessageType.
@@ -67,6 +69,8 @@ var (
 		14: "MESSAGE_TYPE_EXECUTE_RESPONSE",
 		15: "MESSAGE_TYPE_DIGEST_REQUEST",
 		16: "MESSAGE_TYPE_DIGEST_RESPONSE",
+		17: "MESSAGE_TYPE_SIZE_REQUEST",
+		18: "MESSAGE_TYPE_SIZE_RESPONSE",
 	}
 	MessageType_value = map[string]int32{
 		"MESSAGE_TYPE_UNSPECIFIED":      0,
@@ -86,6 +90,8 @@ var (
 		"MESSAGE_TYPE_EXECUTE_RESPONSE": 14,
 		"MESSAGE_TYPE_DIGEST_REQUEST":   15,
 		"MESSAGE_TYPE_DIGEST_RESPONSE":  16,
+		"MESSAGE_TYPE_SIZE_REQUEST":     17,
+		"MESSAGE_TYPE_SIZE_RESPONSE":    18,
 	}
 )
 
@@ -176,7 +182,7 @@ const file_medusa_v1_transport_proto_rawDesc = "" +
 	"\x19medusa/v1/transport.proto\x12\tmedusa.v1\"5\n" +
 	"\x05Error\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\rR\x04code\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage*\x99\x04\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage*\xd8\x04\n" +
 	"\vMessageType\x12\x1c\n" +
 	"\x18MESSAGE_TYPE_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12MESSAGE_TYPE_ERROR\x10\x01\x12\x1d\n" +
@@ -195,7 +201,9 @@ const file_medusa_v1_transport_proto_rawDesc = "" +
 	"\x1cMESSAGE_TYPE_EXECUTE_REQUEST\x10\r\x12!\n" +
 	"\x1dMESSAGE_TYPE_EXECUTE_RESPONSE\x10\x0e\x12\x1f\n" +
 	"\x1bMESSAGE_TYPE_DIGEST_REQUEST\x10\x0f\x12 \n" +
-	"\x1cMESSAGE_TYPE_DIGEST_RESPONSE\x10\x10B\x9e\x01\n" +
+	"\x1cMESSAGE_TYPE_DIGEST_RESPONSE\x10\x10\x12\x1d\n" +
+	"\x19MESSAGE_TYPE_SIZE_REQUEST\x10\x11\x12\x1e\n" +
+	"\x1aMESSAGE_TYPE_SIZE_RESPONSE\x10\x12B\x9e\x01\n" +
 	"\rcom.medusa.v1B\x0eTransportProtoP\x01Z8github.com/lodgvideon/medusa/genproto/medusa/v1;medusav1\xa2\x02\x03MXX\xaa\x02\tMedusa.V1\xca\x02\tMedusa\\V1\xe2\x02\x15Medusa\\V1\\GPBMetadata\xea\x02\n" +
 	"Medusa::V1b\x06proto3"
 

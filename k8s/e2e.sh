@@ -161,6 +161,19 @@ else
   bad "putIfAbsent -> $out (want \"first\")"
 fi
 
+# ---- test: cluster-wide Map.Size ----
+# Put 6 distinct keys via one pod; the size queried from another pod must total 6
+# across the cluster (each entry counted once by its owner, backups excluded).
+echo "=== test: Map.Size (cluster-wide count) ==="
+out=$(incluster '
+  for i in 1 2 3 4 5 6; do curl -s -o /dev/null -X PUT --data-binary v "medusa-0.medusa:8080/v1/maps/sized/k$i"; done
+  curl -s medusa-1.medusa:8080/v1/maps/sized')
+if [ "$out" = "6" ]; then
+  ok "Map.Size totalled 6 entries cluster-wide from a different pod"
+else
+  bad "Map.Size -> $out (want 6)"
+fi
+
 # ---- test: fenced lock (acquire / contend) ----
 # Acquiring returns an 8-byte fence token; a contending holder on another pod
 # gets an empty body (lock held). Assert byte counts, which are printable.

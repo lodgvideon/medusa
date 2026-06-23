@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/lodgvideon/medusa"
@@ -41,6 +42,7 @@ func WithToken(token string) Option {
 //	GET    /metrics                  Prometheus metrics (text exposition format)
 //	GET    /stats                    JSON {members, localEntries, backups}
 //	GET    /members                  JSON array of cluster members
+//	GET    /v1/maps/{map}            cluster-wide live entry count for the map
 //	GET    /v1/maps/{map}/{key}      fetch a value (404 if absent)
 //	PUT    /v1/maps/{map}/{key}      store the request body as the value
 //	DELETE /v1/maps/{map}/{key}      remove a key (404 if absent)
@@ -90,6 +92,16 @@ func New(node *medusa.Node, opts ...Option) http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(out)
+	})
+
+	mux.HandleFunc("GET /v1/maps/{map}", func(w http.ResponseWriter, r *http.Request) {
+		n, err := node.Map(r.PathValue("map")).Size(r.Context())
+		if err != nil {
+			// A member was unreachable, so the count would be only a lower bound.
+			writeText(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeText(w, http.StatusOK, strconv.FormatUint(n, 10))
 	})
 
 	mux.HandleFunc("GET /v1/maps/{map}/{key}", func(w http.ResponseWriter, r *http.Request) {

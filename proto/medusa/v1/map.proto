@@ -77,3 +77,14 @@ message DigestRequest {
 message DigestResponse {
   bool match = 1; // true if the backup's digest for the partition equals the owner's
 }
+
+// SizeRequest asks a peer how many live entries it OWNS for a named map (entries
+// in partitions it is the owner of, so a cluster-wide sum counts each entry once
+// and never double-counts a backup copy).
+message SizeRequest {
+  string map = 1;
+}
+
+message SizeResponse {
+  uint64 count = 1;
+}

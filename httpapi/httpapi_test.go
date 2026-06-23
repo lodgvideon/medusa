@@ -154,6 +154,30 @@ func TestPutGetDeleteRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMapSizeEndpoint(t *testing.T) {
+	srv := newTestServer(t)
+	base := srv.URL + "/v1/maps/sized"
+
+	resp := do(t, http.MethodGet, base, "")
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(got) != "0" {
+		t.Fatalf("empty map size = %d %q, want 200 \"0\"", resp.StatusCode, got)
+	}
+
+	for _, k := range []string{"a", "b", "c"} {
+		if r := do(t, http.MethodPut, base+"/"+k, "v"); r.StatusCode != http.StatusNoContent {
+			t.Fatalf("PUT %s = %d", k, r.StatusCode)
+		}
+	}
+	resp = do(t, http.MethodGet, base, "")
+	got, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(got) != "3" {
+		t.Fatalf("size after 3 puts = %d %q, want 200 \"3\"", resp.StatusCode, got)
+	}
+}
+
 func TestStats(t *testing.T) {
 	srv := newTestServer(t)
 	// Store one entry, then check it shows up in the stats.

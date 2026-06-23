@@ -290,6 +290,28 @@ func (s *store) entryCount() int {
 	return n
 }
 
+// countMap returns the number of live entries in the named map across the
+// partitions for which owned reports true. Restricting to owned partitions lets
+// a cluster-wide sum count each entry exactly once (never a backup copy).
+func (s *store) countMap(name string, owned func(p int) bool) int {
+	now := nowNano()
+	n := 0
+	for p := range s.shards {
+		if !owned(p) {
+			continue
+		}
+		sh := &s.shards[p]
+		sh.mu.RLock()
+		for _, v := range sh.m[name] {
+			if !v.expired(now) {
+				n++
+			}
+		}
+		sh.mu.RUnlock()
+	}
+	return n
+}
+
 // update applies fn to the current value of key atomically, under the shard
 // lock, so concurrent updates to the same key are serialized. fn receives the
 // live value (nil if absent/expired) and returns the new value plus an action.

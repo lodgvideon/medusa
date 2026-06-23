@@ -25,7 +25,8 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
 
 - **Distributed map (`IMap`)** — a named key/value store whose entries are
   spread across 271 partitions. Any node can serve any key by routing to the
-  partition owner.
+  partition owner. `Map.Size` returns the cluster-wide live entry count via a
+  scatter-gather that sums each owner's share (also `GET /v1/maps/{map}`).
 - **Distributed compute (EntryProcessor)** — `Map.Execute(key, "incr", arg)`
   runs a named server-side processor *atomically on the key's owner* (read-
   modify-write under the shard lock), so e.g. an atomic distributed counter

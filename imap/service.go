@@ -444,6 +444,42 @@ func remainingTTLms(expireAt, now int64) int64 {
 // LocalEntryCount returns the number of live entries this node currently stores.
 func (s *Service) LocalEntryCount() int { return s.store.entryCount() }
 
+// localMapSize counts the live entries in the named map that this node OWNS
+// (entries in partitions it is the current owner of), so a cluster-wide sum
+// counts each entry once and never a backup copy.
+func (s *Service) localMapSize(name string) int {
+	tbl := s.mem.Table()
+	return s.store.countMap(name, func(p int) bool { return tbl.OwnerOf(p) == s.self })
+}
+
+// sendSize asks a peer for the count of entries it owns for the named map.
+func (s *Service) sendSize(ctx context.Context, addr, name string) (uint64, error) {
+	reqBuf := codec.GetBuf()
+	dstBuf := codec.GetBuf()
+	defer codec.PutBuf(reqBuf)
+	defer codec.PutBuf(dstBuf)
+
+	rb, err := codec.Marshal((*reqBuf)[:0], &medusav1.SizeRequest{Map: name})
+	if err != nil {
+		return 0, err
+	}
+	*reqBuf = rb
+
+	respType, resp, err := s.tr.Send(ctx, addr, medusav1.MessageType_MESSAGE_TYPE_SIZE_REQUEST, rb, (*dstBuf)[:0])
+	*dstBuf = resp
+	if err != nil {
+		return 0, err
+	}
+	if respType != medusav1.MessageType_MESSAGE_TYPE_SIZE_RESPONSE {
+		return 0, fmt.Errorf("imap: unexpected size response type %v", respType)
+	}
+	var sr medusav1.SizeResponse
+	if err := sr.UnmarshalVT(resp); err != nil {
+		return 0, err
+	}
+	return sr.Count, nil
+}
+
 // Snapshot serializes every live entry on this node for persistence.
 func (s *Service) Snapshot() *medusav1.Snapshot {
 	entries := s.store.snapshotAll()
@@ -605,6 +641,14 @@ func (s *Service) Handle(reqType medusav1.MessageType, req, respBuf []byte) (med
 		match := s.store.partitionDigest(int(dr.Partition)) == dr.Digest
 		out, err := codec.Marshal(respBuf, &medusav1.DigestResponse{Match: match})
 		return medusav1.MessageType_MESSAGE_TYPE_DIGEST_RESPONSE, out, err
+
+	case medusav1.MessageType_MESSAGE_TYPE_SIZE_REQUEST:
+		var sr medusav1.SizeRequest
+		if err := sr.UnmarshalVT(req); err != nil {
+			return 0, respBuf, err
+		}
+		out, err := codec.Marshal(respBuf, &medusav1.SizeResponse{Count: uint64(s.localMapSize(sr.Map))})
+		return medusav1.MessageType_MESSAGE_TYPE_SIZE_RESPONSE, out, err
 
 	default:
 		return 0, respBuf, fmt.Errorf("imap: unhandled message type %v", reqType)

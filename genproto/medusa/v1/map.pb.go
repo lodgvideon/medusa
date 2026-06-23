@@ -682,6 +682,97 @@ func (x *DigestResponse) GetMatch() bool {
 	return false
 }
 
+// SizeRequest asks a peer how many live entries it OWNS for a named map (entries
+// in partitions it is the owner of, so a cluster-wide sum counts each entry once
+// and never double-counts a backup copy).
+type SizeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Map           string                 `protobuf:"bytes,1,opt,name=map,proto3" json:"map,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SizeRequest) Reset() {
+	*x = SizeRequest{}
+	mi := &file_medusa_v1_map_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SizeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SizeRequest) ProtoMessage() {}
+
+func (x *SizeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_medusa_v1_map_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SizeRequest.ProtoReflect.Descriptor instead.
+func (*SizeRequest) Descriptor() ([]byte, []int) {
+	return file_medusa_v1_map_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *SizeRequest) GetMap() string {
+	if x != nil {
+		return x.Map
+	}
+	return ""
+}
+
+type SizeResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Count         uint64                 `protobuf:"varint,1,opt,name=count,proto3" json:"count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SizeResponse) Reset() {
+	*x = SizeResponse{}
+	mi := &file_medusa_v1_map_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SizeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SizeResponse) ProtoMessage() {}
+
+func (x *SizeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_medusa_v1_map_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SizeResponse.ProtoReflect.Descriptor instead.
+func (*SizeResponse) Descriptor() ([]byte, []int) {
+	return file_medusa_v1_map_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *SizeResponse) GetCount() uint64 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
 var File_medusa_v1_map_proto protoreflect.FileDescriptor
 
 const file_medusa_v1_map_proto_rawDesc = "" +
@@ -727,7 +818,11 @@ const file_medusa_v1_map_proto_rawDesc = "" +
 	"\tpartition\x18\x01 \x01(\rR\tpartition\x12\x16\n" +
 	"\x06digest\x18\x02 \x01(\x04R\x06digest\"&\n" +
 	"\x0eDigestResponse\x12\x14\n" +
-	"\x05match\x18\x01 \x01(\bR\x05matchB\x98\x01\n" +
+	"\x05match\x18\x01 \x01(\bR\x05match\"\x1f\n" +
+	"\vSizeRequest\x12\x10\n" +
+	"\x03map\x18\x01 \x01(\tR\x03map\"$\n" +
+	"\fSizeResponse\x12\x14\n" +
+	"\x05count\x18\x01 \x01(\x04R\x05countB\x98\x01\n" +
 	"\rcom.medusa.v1B\bMapProtoP\x01Z8github.com/lodgvideon/medusa/genproto/medusa/v1;medusav1\xa2\x02\x03MXX\xaa\x02\tMedusa.V1\xca\x02\tMedusa\\V1\xe2\x02\x15Medusa\\V1\\GPBMetadata\xea\x02\n" +
 	"Medusa::V1b\x06proto3"
 
@@ -743,7 +838,7 @@ func file_medusa_v1_map_proto_rawDescGZIP() []byte {
 	return file_medusa_v1_map_proto_rawDescData
 }
 
-var file_medusa_v1_map_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_medusa_v1_map_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_medusa_v1_map_proto_goTypes = []any{
 	(*PutRequest)(nil),      // 0: medusa.v1.PutRequest
 	(*PutResponse)(nil),     // 1: medusa.v1.PutResponse
@@ -757,6 +852,8 @@ var file_medusa_v1_map_proto_goTypes = []any{
 	(*Snapshot)(nil),        // 9: medusa.v1.Snapshot
 	(*DigestRequest)(nil),   // 10: medusa.v1.DigestRequest
 	(*DigestResponse)(nil),  // 11: medusa.v1.DigestResponse
+	(*SizeRequest)(nil),     // 12: medusa.v1.SizeRequest
+	(*SizeResponse)(nil),    // 13: medusa.v1.SizeResponse
 }
 var file_medusa_v1_map_proto_depIdxs = []int32{
 	8, // 0: medusa.v1.Snapshot.entries:type_name -> medusa.v1.SnapshotEntry
@@ -778,7 +875,7 @@ func file_medusa_v1_map_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_medusa_v1_map_proto_rawDesc), len(file_medusa_v1_map_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   12,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
