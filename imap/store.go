@@ -221,10 +221,14 @@ func (s *store) loadAll(entries []entry) {
 // rebalance) rather than being silently lost. The compare-and-delete runs under
 // the shard lock, so a concurrent write either lands before it (and is seen as
 // changed, hence kept) or after it (and is never touched).
-func (s *store) dropMigrated(p int, entries []entry) {
+// It returns the entries it actually dropped so the caller can record those
+// deletions durably (the WAL), preventing a crash before the next checkpoint
+// from replaying the pre-drop snapshot and resurrecting handed-off data.
+func (s *store) dropMigrated(p int, entries []entry) []entry {
 	sh := &s.shards[p]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
+	var dropped []entry
 	for _, e := range entries {
 		inner := sh.m[e.mapName]
 		if inner == nil {
@@ -232,6 +236,7 @@ func (s *store) dropMigrated(p int, entries []entry) {
 		}
 		if cur, ok := inner[e.key]; ok && cur.expireAt == e.expireAt && bytes.Equal(cur.data, e.value) {
 			delete(inner, e.key)
+			dropped = append(dropped, e)
 		}
 	}
 	for name, inner := range sh.m {
@@ -239,6 +244,7 @@ func (s *store) dropMigrated(p int, entries []entry) {
 			delete(sh.m, name)
 		}
 	}
+	return dropped
 }
 
 // sweepExpired removes expired entries across all shards, returning the count

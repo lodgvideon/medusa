@@ -338,7 +338,20 @@ func (s *Service) Migrate(ctx context.Context, table *partition.Table) {
 		if !selfHolds && pushedOK {
 			// Drop only the entries we actually migrated and that are unchanged —
 			// never a blanket wipe — so a write that raced this migration survives.
-			s.store.dropMigrated(p, entries)
+			dropped := s.store.dropMigrated(p, entries)
+			// Record the hand-off deletions in the WAL so a crash before the next
+			// checkpoint cannot replay the pre-drop snapshot and resurrect entries
+			// for a partition this node no longer owns. Idempotent on replay
+			// (removing an absent key is a no-op); the post-rebalance checkpoint is
+			// the backstop if a WAL append fails. (A batched append could cut the
+			// per-entry fsync cost on very large rebalances — see the roadmap.)
+			if s.wal != nil {
+				for _, e := range dropped {
+					if err := s.wal.appendRemove(e.mapName, []byte(e.key)); err != nil {
+						break
+					}
+				}
+			}
 		}
 	}
 }

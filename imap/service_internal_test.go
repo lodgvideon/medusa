@@ -3,6 +3,7 @@ package imap
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -308,6 +309,82 @@ func TestLookupReflectsRemoval(t *testing.T) {
 	st.remove(p, "m", key)
 	if _, _, ok := st.lookup(p, "m", key); ok {
 		t.Fatal("lookup must report a removed key as absent so anti-entropy won't resurrect it")
+	}
+}
+
+// TestMigrateWALsHandoffDropNoResurrection is the regression guard for the
+// cross-feature durability bug found by the interaction review: Migrate's
+// hand-off deletion (dropMigrated) was not WAL-logged, so a crash between the
+// migration and the next checkpoint replayed the pre-drop snapshot and
+// resurrected entries for a partition the node no longer owns. Migrate now WALs
+// the drop; a snapshot+replay after the drop must NOT bring the key back.
+func TestMigrateWALsHandoffDropNoResurrection(t *testing.T) {
+	sw := transport.NewSwitch()
+	mk := func(id string) (*Service, *cluster.Membership) {
+		tr := sw.NewTransport(id)
+		mem := cluster.New(cluster.Member{ID: id, Addr: id}, tr, 1)
+		svc := NewService(mem, tr)
+		h := func(rt medusav1.MessageType, req, rb []byte) (medusav1.MessageType, []byte, error) {
+			switch rt {
+			case medusav1.MessageType_MESSAGE_TYPE_JOIN_REQUEST,
+				medusav1.MessageType_MESSAGE_TYPE_MEMBER_LIST,
+				medusav1.MessageType_MESSAGE_TYPE_HEARTBEAT:
+				return mem.Handle(rt, req, rb)
+			default:
+				return svc.Handle(rt, req, rb)
+			}
+		}
+		if err := tr.Listen(h); err != nil {
+			t.Fatalf("listen %s: %v", id, err)
+		}
+		t.Cleanup(func() { _ = tr.Close() })
+		return svc, mem
+	}
+	a, _ := mk("a")
+	_, bMem := mk("b")
+	if err := bMem.Join(context.Background(), []string{"a"}); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+	walPath := filepath.Join(t.TempDir(), "wal.log")
+	if err := a.OpenWAL(walPath); err != nil {
+		t.Fatalf("open wal: %v", err)
+	}
+
+	key := []byte("kx")
+	p := partition.For(key)
+	if _, err := a.applyPut(context.Background(), "m", key, []byte("v"), 0, true); err != nil {
+		t.Fatalf("applyPut: %v", err)
+	}
+	// Checkpoint: the snapshot now holds the key and the WAL is truncated — this
+	// is the state a restart would load from disk.
+	var snap *medusav1.Snapshot
+	if err := a.Checkpoint(func(s *medusav1.Snapshot) error { snap = s; return nil }); err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	// Hand the partition off to a table where a is no longer a holder ("b" owns
+	// everything). Migrate pushes to b, drops locally, and WALs the drop.
+	a.Migrate(context.Background(), partition.NewTable([]string{"b"}, 1))
+	if _, ok := a.store.get(p, "m", key); ok {
+		t.Fatal("precondition: a should have dropped the migrated-away key")
+	}
+	// Crash before the next checkpoint: close the WAL without truncating.
+	if err := a.CloseWAL(); err != nil {
+		t.Fatalf("close wal: %v", err)
+	}
+
+	// Restart: load the PRE-drop snapshot, then replay the WAL. The hand-off
+	// remove must keep the key from resurrecting.
+	a2 := svcWith(&fakeTransport{})
+	a2.Restore(snap)
+	if _, ok := a2.store.get(p, "m", key); !ok {
+		t.Fatal("snapshot should contain the key before WAL replay (test setup)")
+	}
+	if err := a2.OpenWAL(walPath); err != nil {
+		t.Fatalf("reopen wal: %v", err)
+	}
+	defer a2.CloseWAL()
+	if _, ok := a2.store.get(p, "m", key); ok {
+		t.Fatal("migrated-away key resurrected after crash+replay; the hand-off drop was not WAL'd")
 	}
 }
 
