@@ -41,15 +41,19 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   at-least-once under owner failover (a lost response + retry can report a false
   negative for a write that actually applied), so for strict locking use a
   caller-unique value and read it back to confirm ownership.
-- **Fenced locks** — `Map.Lock(key, holder)` returns a monotonically increasing
-  **fence token** (and whether it was acquired); `Map.Unlock(key, holder)`
-  releases it. The token lets a holder prove ownership to a downstream service so
-  a stale holder (one paused past its turn) is detected — the standard fix for
-  the lock-safety problem. Acquiring a lock you already hold returns your existing
-  token (idempotent), so a failover retry is safe rather than a false negative.
-  It is a single-owner lock (as correct as the partition's owner model, not a
-  consensus lock); the fence survives release and migration. Built on the same
-  atomic owner-side processors (`lockacquire`/`lockrelease`).
+- **Fenced locks** — `Map.Lock(key, holder)` returns a **fence token** (and
+  whether it was acquired); `Map.Unlock(key, holder)` releases it. The token lets
+  a holder prove ownership to a downstream service so a stale holder (one paused
+  past its turn) is detected. Acquiring a lock you already hold returns your
+  existing token (idempotent), so a failover retry is safe rather than a false
+  negative. Built on the same atomic owner-side processors
+  (`lockacquire`/`lockrelease`); the fence survives release and graceful
+  migration. **Caveat:** it is a single-owner lock, and the fence is strictly
+  monotonic only while the owner is live / across a graceful handoff — an
+  *ungraceful* owner crash where the promoted backup missed the last acquire can
+  reissue a token (best-effort replication, an AP design). Crash-safe monotonic
+  fencing needs synchronous/consensus fence replication (roadmap); the `holder`
+  is a cooperative id, not authenticated.
 - **Replication (configurable factor)** — every write is synchronously copied to
   `Backups` distinct backup owners (default 1; env `MEDUSA_BACKUPS`). A cluster
   tolerates that many simultaneous holder failures with no data loss: when the
@@ -344,9 +348,10 @@ bash k8s/e2e.sh            # or: go test -tags k8s -run TestK8sE2E -timeout 15m 
   deletes), not just receives missing/stale values — the push-only residual.
   Doing it safely needs a per-entry version so a freshly-replicated write is not
   pruned by a slightly-stale reconcile manifest.
-- Fencing tokens for the lock primitives: a monotonic token returned by
-  `PutIfAbsent` so a holder can prove ownership to downstream services and the
-  at-least-once failover ambiguity becomes detectable rather than silent.
+- Crash-safe fence monotonicity: synchronous or consensus replication of the
+  fenced-lock token so it stays strictly increasing even across an ungraceful
+  owner crash (today it is monotonic only while the owner is live / across a
+  graceful handoff — see the `Map.Lock` caveat).
 - Intern map names (or use integer map handles) to make the remote read path
   fully zero-alloc.
 - Phi-accrual failure detection with a background heartbeat loop.

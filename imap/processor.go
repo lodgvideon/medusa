@@ -141,9 +141,13 @@ func splitCAS(arg []byte) (expected, newVal []byte, ok bool) {
 // services so a stale holder (one that lost the lock during a pause) is detected
 // — the standard fix for the at-least-once ambiguity of plain putIfAbsent.
 //
-// This is a single-owner lock, not a consensus lock: it is as correct as the
-// partition's single-owner model, and the fence is what makes a stale holder
-// detectable rather than silently dangerous.
+// This is a single-owner lock, not a consensus lock. The fence is strictly
+// monotonic while the owner is live and across a graceful handoff (the entry
+// migrates with its fence), but replication to backups is best-effort, so a
+// backup promoted after an ungraceful owner crash may have missed the last
+// acquire and reissue a token already in use. Crash-safe monotonic fencing needs
+// synchronous/consensus replication of the fence — out of scope here; see the
+// Map.Lock doc and the roadmap.
 func encodeLock(fence uint64, holder []byte) []byte {
 	b := make([]byte, 8+len(holder))
 	binary.BigEndian.PutUint64(b, fence)

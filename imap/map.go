@@ -216,7 +216,8 @@ func (mp *Map) Execute(ctx context.Context, key []byte, processor string, arg []
 // backup that now holds the key and returns false — a false negative (you won but
 // were told you lost). For strict mutual exclusion, store a value unique to the
 // caller and, on a false/errored result, Get the key: if it equals your value you
-// hold the lock. (Fencing tokens are the textbook hardening — see the roadmap.)
+// hold the lock. For a fence token that makes a stale holder detectable, use the
+// Lock/Unlock fenced-lock API instead (note its monotonicity caveat).
 func (mp *Map) PutIfAbsent(ctx context.Context, key, value []byte) (bool, error) {
 	out, err := mp.Execute(ctx, key, "putifabsent", value)
 	if err != nil {
@@ -251,8 +252,17 @@ func (mp *Map) CompareAndSwap(ctx context.Context, key, expected, newVal []byte)
 //
 // Acquiring a lock you already hold returns your existing token (idempotent), so
 // a retry after an ambiguous/owner-failover call is safe — it returns the token
-// rather than a false negative. The fence survives release and ownership
+// rather than a false negative. The fence survives release and graceful ownership
 // migration. Manage a lock key only through Lock/Unlock — not Put/Get/Remove.
+//
+// Monotonicity caveat: the fence is strictly increasing while the same owner is
+// live and across a graceful handoff, but NOT guaranteed across an ungraceful
+// owner crash. Replication to backups is best-effort (an AP design), so a backup
+// promoted after a crash may have missed the last acquire and reissue a token
+// that is already live elsewhere. Crash-safe monotonic fencing needs synchronous
+// or consensus replication of the fence, which medusa does not do — see the
+// roadmap. holder is a cooperative identity, not authenticated: any caller that
+// presents a holder's id can release or re-enter that holder's lock.
 func (mp *Map) Lock(ctx context.Context, key, holder []byte) (token uint64, acquired bool, err error) {
 	if len(holder) == 0 {
 		return 0, false, errEmptyHolder
