@@ -1,6 +1,7 @@
 package partition_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/lodgvideon/medusa/partition"
@@ -66,14 +67,82 @@ func TestTableOwnershipBalanced(t *testing.T) {
 	tbl := partition.NewTable(members, 1)
 
 	counts := make(map[string]int, len(members))
+	total := 0
+	for p := 0; p < partition.Count; p++ {
+		counts[tbl.OwnerOf(p)]++
+		total++
+	}
+	// Rendezvous hashing balances statistically, not exactly: each of 5 members
+	// owns roughly Count/5 ≈ 54 partitions. Assert a fair share (no starvation or
+	// hogging) and that every partition is assigned exactly once.
+	for _, m := range members {
+		if counts[m] < 35 || counts[m] > 75 {
+			t.Errorf("member %q owns %d partitions, want a fair share near 54", m, counts[m])
+		}
+	}
+	if total != partition.Count {
+		t.Errorf("partitions assigned = %d, want %d", total, partition.Count)
+	}
+}
+
+// TestTableBalancedRealisticIDs checks the weight mixer balances well for
+// production-style ids (stable pod DNS names), not just single letters.
+func TestTableBalancedRealisticIDs(t *testing.T) {
+	const n = 10
+	members := make([]string, n)
+	for i := range members {
+		members[i] = fmt.Sprintf("medusa-%d.medusa:7700", i)
+	}
+	tbl := partition.NewTable(members, 2)
+
+	counts := make(map[string]int, n)
 	for p := 0; p < partition.Count; p++ {
 		counts[tbl.OwnerOf(p)]++
 	}
-	// Count=271 over 5 members => each owns 54 or 55 partitions.
+	avg := partition.Count / n // ≈27
 	for _, m := range members {
-		if counts[m] < 54 || counts[m] > 55 {
-			t.Errorf("member %q owns %d partitions, want 54-55", m, counts[m])
+		if counts[m] < avg/2 || counts[m] > 2*avg {
+			t.Errorf("member %q owns %d partitions, want a fair share near %d", m, counts[m], avg)
 		}
+	}
+}
+
+// TestTableMinimalMovementOnJoin is the core rendezvous-hashing property: adding
+// a member reassigns only that member's share (~Count/n) of partitions, not most
+// of them as round-robin would.
+func TestTableMinimalMovementOnJoin(t *testing.T) {
+	before := partition.NewTable([]string{"a", "b", "c", "d"}, 1)
+	after := partition.NewTable([]string{"a", "b", "c", "d", "e"}, 1)
+
+	moved := 0
+	for p := 0; p < partition.Count; p++ {
+		if before.OwnerOf(p) != after.OwnerOf(p) {
+			moved++
+		}
+	}
+	// Expect ~Count/5 ≈ 54 moved; round-robin would move ~Count*4/5 ≈ 217. Assert
+	// well under half to prove minimal movement (and non-zero, since e must own
+	// some partitions).
+	if moved == 0 || moved > partition.Count/2 {
+		t.Fatalf("join moved %d/%d partitions; expected ~%d (round-robin would move ~%d)",
+			moved, partition.Count, partition.Count/5, partition.Count*4/5)
+	}
+}
+
+// TestTableMinimalMovementOnLeave is the symmetric property: when a member
+// leaves, only the partitions it owned move to new owners.
+func TestTableMinimalMovementOnLeave(t *testing.T) {
+	before := partition.NewTable([]string{"a", "b", "c", "d", "e"}, 1)
+	after := partition.NewTable([]string{"a", "b", "c", "d"}, 1) // e departed
+
+	moved := 0
+	for p := 0; p < partition.Count; p++ {
+		if before.OwnerOf(p) != after.OwnerOf(p) {
+			moved++
+		}
+	}
+	if moved > partition.Count/2 {
+		t.Fatalf("leave moved %d/%d partitions; expected only e's ~%d", moved, partition.Count, partition.Count/5)
 	}
 }
 

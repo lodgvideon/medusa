@@ -16,20 +16,55 @@ const Count = 271
 // enough, a configurable number of distinct backup members. It is rebuilt
 // deterministically from a sorted member list.
 //
-// The assignment is a simple round-robin over "replicas": replica r of
-// partition p is the ((p+r) mod n)-th member, with replica 0 the owner and
-// replicas 1..backupCount the backups. Backups are distinct from the owner and
-// from each other as long as the cluster has more members than replicas; with
-// fewer members the surplus backup slots are simply empty. This is the simplest
-// scheme that keeps ownership balanced and replicas distinct; its trade-off is
-// that a membership change reshuffles most partitions. A future revision can
-// swap in rendezvous (HRW) hashing to minimise data movement without changing
-// this type's interface.
+// The assignment uses rendezvous (highest-random-weight) hashing: for each
+// partition p, every member is scored by a deterministic weight hash(memberID,
+// p), and the members are ranked by that weight — the top member owns p and the
+// next backupCount own its backups. Replicas are distinct from each other as
+// long as the cluster has more members than replicas; with fewer members the
+// surplus backup slots are simply empty.
+//
+// Rendezvous hashing is chosen over a simpler round-robin (owner = p mod n)
+// because it minimises data movement on a membership change: adding or removing
+// a member only reassigns the partitions whose top-ranked member actually
+// changed — about Count/n of them — instead of reshuffling nearly all of them.
+// Balance is statistical rather than exact (each member owns roughly Count/n
+// partitions), a worthwhile trade for cheap elastic scaling.
 type Table struct {
 	members     []string
 	owners      [Count]int32
 	backups     []int32 // Count rows × backupCount cols, row-major; -1 = empty slot
 	backupCount int     // configured backups per partition (replication factor − 1)
+}
+
+// hrwWeight is the rendezvous weight of member id for partition p: a 64-bit
+// FNV-1a hash over the id bytes followed by the partition number, run through a
+// splitmix64 finalizer so the result avalanches well even for short, similar ids
+// (e.g. "a","b","c") and sequential partition numbers — without strong mixing,
+// rendezvous balance degrades badly for such inputs. It is a pure function of
+// (id, p) — no per-process seed — so every node scores a given (member,
+// partition) pair identically.
+func hrwWeight(id string, p int) uint64 {
+	const (
+		offset64 uint64 = 14695981039346656037
+		prime64  uint64 = 1099511628211
+	)
+	h := offset64
+	for i := 0; i < len(id); i++ {
+		h ^= uint64(id[i])
+		h *= prime64
+	}
+	u := uint32(p)
+	for i := 0; i < 4; i++ {
+		h ^= uint64(byte(u >> (8 * i)))
+		h *= prime64
+	}
+	// splitmix64 finalizer — strong avalanche for uniform weights.
+	h ^= h >> 30
+	h *= 0xbf58476d1ce4e5b9
+	h ^= h >> 27
+	h *= 0x94d049bb133111eb
+	h ^= h >> 31
+	return h
 }
 
 // NewTable builds a partition table for the given member ids and backup count.
@@ -44,20 +79,41 @@ func NewTable(memberIDs []string, backupCount int) *Table {
 
 	t := &Table{members: members, backupCount: backupCount}
 	t.backups = make([]int32, Count*backupCount) // zero-length when backupCount == 0
-	n := int32(len(members))
+	n := len(members)
+
+	// ranked is reused across partitions; for each partition it is filled with
+	// (weight, member index) and sorted by descending weight (member index breaks
+	// ties so the result is fully deterministic).
+	type ranked struct {
+		weight uint64
+		idx    int32
+	}
+	scratch := make([]ranked, n)
+
 	for p := 0; p < Count; p++ {
+		base := p * backupCount
 		if n == 0 {
 			t.owners[p] = -1
-		} else {
-			t.owners[p] = int32(p) % n
-		}
-		base := p * backupCount
-		for j := 0; j < backupCount; j++ {
-			r := int32(j + 1) // replica index 1..backupCount
-			if r >= n {       // not enough distinct members for this backup
+			for j := 0; j < backupCount; j++ {
 				t.backups[base+j] = -1
+			}
+			continue
+		}
+		for i := 0; i < n; i++ {
+			scratch[i] = ranked{weight: hrwWeight(members[i], p), idx: int32(i)}
+		}
+		sort.Slice(scratch, func(a, b int) bool {
+			if scratch[a].weight != scratch[b].weight {
+				return scratch[a].weight > scratch[b].weight
+			}
+			return scratch[a].idx < scratch[b].idx
+		})
+		t.owners[p] = scratch[0].idx
+		for j := 0; j < backupCount; j++ {
+			if j+1 < n {
+				t.backups[base+j] = scratch[j+1].idx
 			} else {
-				t.backups[base+j] = (int32(p) + r) % n
+				t.backups[base+j] = -1 // not enough distinct members for this backup
 			}
 		}
 	}
@@ -96,8 +152,9 @@ func (t *Table) NumBackups(p int) int {
 }
 
 // BackupAt returns the i-th backup member id for partition p (0-indexed) and
-// whether it exists. Backups are ordered by replica index, so BackupAt(p, 0) is
-// the first successor and the natural failover target.
+// whether it exists. Backups are ordered by descending rendezvous weight, so
+// BackupAt(p, 0) is the next-ranked member after the owner and the natural
+// failover target.
 func (t *Table) BackupAt(p, i int) (string, bool) {
 	if i < 0 || i >= t.backupCount {
 		return "", false

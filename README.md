@@ -268,9 +268,12 @@ bash k8s/e2e.sh            # or: go test -tags k8s -run TestK8sE2E -timeout 15m 
 
 ## Design decisions & trade-offs
 
-- **Round-robin partition assignment** (`owner = p mod n`, `backup = p+1 mod n`).
-  Simplest scheme that keeps ownership balanced and backups distinct. Trade-off:
-  a membership change reshuffles most partitions.
+- **Rendezvous (HRW) partition assignment.** Each partition ranks members by a
+  deterministic weight `hash(memberID, p)`; the top member owns it and the next
+  few own its backups. A membership change reassigns only the partitions whose
+  top-ranked member changed — about `Count/n` of them — so elastic scaling moves
+  minimal data. Trade-off vs. a plain `owner = p mod n` round-robin: balance is
+  statistical (≈`Count/n` per member) rather than exact.
 - **Configurable synchronous backups.** `Config.Backups` (default 1) sets how
   many distinct peers each write is replicated to before the cluster keeps it,
   so it tolerates that many simultaneous failures. Replication is synchronous
@@ -294,7 +297,6 @@ bash k8s/e2e.sh            # or: go test -tags k8s -run TestK8sE2E -timeout 15m 
 - Group-commit for the write-ahead log: it currently fsyncs on every write
   (durability over throughput), so batching concurrent writes into one fsync
   would raise write throughput without weakening the guarantee.
-- Rendezvous (HRW) partitioning to minimize data movement on membership change.
 - Read-repair / anti-entropy to re-sync replicas that diverged during a failure.
 - Intern map names (or use integer map handles) to make the remote read path
   fully zero-alloc.
