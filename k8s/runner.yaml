@@ -44,7 +44,10 @@ spec:
       containers:
         # ---- the runner agent ----
         - name: runner
-          image: myoung34/github-runner:latest # pin to a digest/tag for reproducibility
+          # Pinned by digest for reproducibility (a tag like :latest can drift on
+          # the next pod recreate). This is runner v2.335.1, verified green in CI
+          # on 2026-06-24; re-pin from `make runner-check` output to upgrade.
+          image: myoung34/github-runner@sha256:328cab3261ee154ac750c271487e01b467b53f46949a6f48447a051890693c6a
           imagePullPolicy: IfNotPresent
           env:
             - name: REPO_URL
@@ -80,7 +83,8 @@ spec:
             - { name: docker-sock, mountPath: /run/dind }
         # ---- Docker-in-Docker sidecar (powers the `docker build` job) ----
         - name: dind
-          image: docker:27-dind
+          # docker:27-dind pinned by digest (verified 2026-06-24).
+          image: docker@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce
           imagePullPolicy: IfNotPresent
           securityContext:
             privileged: true # dockerd needs full kernel caps to manage containers
