@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"io"
 	"log/slog"
 	"math/big"
@@ -581,6 +582,43 @@ func TestNodeAddrAndCheckLiveness(t *testing.T) {
 	}
 	if len(nodes[0].Members()) != 2 {
 		t.Errorf("members after eviction = %d, want 2", len(nodes[0].Members()))
+	}
+}
+
+// TestNodeAggregateRoutes is the regression guard for the node dispatch router:
+// a new imap message type must be routed to maps.Handle there, not only handled
+// inside imap.Handle. Aggregating from one node over data another node owns sends
+// AGGREGATE_REQUEST across the router; before the routing fix this failed with
+// "unhandled message type" (caught only by the k8s e2e, since the imap-level test
+// bypasses the router). count and sum must total the whole cluster.
+func TestNodeAggregateRoutes(t *testing.T) {
+	sw := transport.NewSwitch()
+	ctx := context.Background()
+	a := inmemNode(t, sw, "a", nil)
+	b := inmemNode(t, sw, "b", []string{"a"})
+	awaitMembers(t, 2, a, b)
+
+	var want int64
+	for i := int64(1); i <= 20; i++ {
+		v := make([]byte, 8)
+		binary.BigEndian.PutUint64(v, uint64(i))
+		if err := a.Map("nums").Put(ctx, []byte{byte(i)}, v); err != nil {
+			t.Fatalf("put %d: %v", i, err)
+		}
+		want += i
+	}
+
+	// Aggregate from b: its share is local, a's share crosses the dispatch router.
+	got, err := b.Map("nums").Aggregate(ctx, "sum")
+	if err != nil {
+		t.Fatalf("aggregate sum across nodes: %v", err)
+	}
+	if n := int64(binary.BigEndian.Uint64(got)); n != want {
+		t.Fatalf("cluster-wide sum = %d, want %d", n, want)
+	}
+	cnt, err := a.Map("nums").Aggregate(ctx, "count")
+	if err != nil || int64(binary.BigEndian.Uint64(cnt)) != 20 {
+		t.Fatalf("cluster-wide count = %d,%v; want 20", int64(binary.BigEndian.Uint64(cnt)), err)
 	}
 }
 

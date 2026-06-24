@@ -178,6 +178,41 @@ func TestMapSizeEndpoint(t *testing.T) {
 	}
 }
 
+func TestMapAggregateEndpoint(t *testing.T) {
+	srv := newTestServer(t)
+	base := srv.URL + "/v1/maps/agg"
+
+	// Three int64 values 1,2,3 as raw 8-byte big-endian bodies (small values are
+	// seven zero bytes then the value), avoiding an encoding/binary import here.
+	for k, v := range map[string]byte{"k1": 1, "k2": 2, "k3": 3} {
+		body := string([]byte{0, 0, 0, 0, 0, 0, 0, v})
+		if r := do(t, http.MethodPut, base+"/"+k, body); r.StatusCode != http.StatusNoContent {
+			t.Fatalf("PUT %s = %d", k, r.StatusCode)
+		}
+	}
+
+	check := func(agg, want string) {
+		t.Helper()
+		resp := do(t, http.MethodGet, base+"?agg="+agg, "")
+		got, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || string(got) != want {
+			t.Fatalf("agg=%s = %d %q, want 200 %q", agg, resp.StatusCode, got, want)
+		}
+	}
+	check("count", "3")
+	check("sum", "6")
+	check("min", "1")
+	check("max", "3")
+
+	// An unknown aggregator is a client error, not a 502.
+	resp := do(t, http.MethodGet, base+"?agg=bogus", "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown aggregator = %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestMapClearEndpoint(t *testing.T) {
 	srv := newTestServer(t)
 	base := srv.URL + "/v1/maps/c"

@@ -45,6 +45,15 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   (counted) rather than blocking the writer. Events are local — register on every
   node for a cluster-wide view. `medusa_events_emitted_total` /
   `medusa_events_dropped_total` count delivery.
+- **Aggregations (distributed map-reduce)** — `Map.Aggregate(ctx, "sum")` runs a
+  registered aggregator across the cluster: every member reduces the entries it
+  *owns* to a partial (each entry folded once, never a backup copy) and the caller
+  combines the partials. Built-ins `count`, `sum`, `min`, `max` treat values as
+  big-endian int64 (compatible with the `incr` counter); `RegisterAggregator`
+  injects your own (the SOLID seam — `Reduce` + associative/commutative
+  `Combine`). The member-side reduce runs outside the shard locks. Over HTTP:
+  `GET /v1/maps/{map}?agg=sum` (400 for an unknown aggregator, 502 + partial if a
+  member is unreachable).
 - **Atomic coordination primitives** — built on the same atomic owner-side
   read-modify-write: `Map.PutIfAbsent(key, value)` stores only if the key is
   absent (returns whether it won — a distributed-lock / leader-election building

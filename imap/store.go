@@ -312,6 +312,31 @@ func (s *store) countMap(name string, owned func(p int) bool) int {
 	return n
 }
 
+// collectOwnedValues returns the live values for the named map in the partitions
+// owned reports true for — the input to a distributed aggregation's member-side
+// reduce. Values alias internal storage (a stored value is immutable: put replaces
+// the slice rather than mutating it, like get's returned slice), so they are safe
+// to read after the lock drops without copying. Only owned partitions are visited,
+// so a cluster-wide reduce folds each entry once and never a backup copy.
+func (s *store) collectOwnedValues(name string, owned func(p int) bool) [][]byte {
+	now := nowNano()
+	var out [][]byte
+	for p := range s.shards {
+		if !owned(p) {
+			continue
+		}
+		sh := &s.shards[p]
+		sh.mu.RLock()
+		for _, v := range sh.m[name] {
+			if !v.expired(now) {
+				out = append(out, v.data)
+			}
+		}
+		sh.mu.RUnlock()
+	}
+	return out
+}
+
 // countOwned returns the number of live entries in the partitions owned reports
 // true for. Eviction caps the OWNED count (not the total, which includes backup
 // copies it cannot evict), so the cap is always reachable by evicting owned

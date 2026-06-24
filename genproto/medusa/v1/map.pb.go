@@ -864,6 +864,106 @@ func (x *ClearResponse) GetRemoved() uint64 {
 	return 0
 }
 
+// AggregateRequest asks a peer to reduce the entries it OWNS for a named map with
+// a named aggregator, returning that member's partial. A cluster-wide map-reduce:
+// every member reduces its share and the caller combines the partials, so each
+// entry is folded exactly once (never a backup copy).
+type AggregateRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Map           string                 `protobuf:"bytes,1,opt,name=map,proto3" json:"map,omitempty"`
+	Aggregator    string                 `protobuf:"bytes,2,opt,name=aggregator,proto3" json:"aggregator,omitempty"` // registered aggregator name (e.g. "count", "sum")
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AggregateRequest) Reset() {
+	*x = AggregateRequest{}
+	mi := &file_medusa_v1_map_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AggregateRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AggregateRequest) ProtoMessage() {}
+
+func (x *AggregateRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_medusa_v1_map_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AggregateRequest.ProtoReflect.Descriptor instead.
+func (*AggregateRequest) Descriptor() ([]byte, []int) {
+	return file_medusa_v1_map_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *AggregateRequest) GetMap() string {
+	if x != nil {
+		return x.Map
+	}
+	return ""
+}
+
+func (x *AggregateRequest) GetAggregator() string {
+	if x != nil {
+		return x.Aggregator
+	}
+	return ""
+}
+
+type AggregateResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Partial       []byte                 `protobuf:"bytes,1,opt,name=partial,proto3" json:"partial,omitempty"` // aggregator-encoded partial; empty means the member owns no entries
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AggregateResponse) Reset() {
+	*x = AggregateResponse{}
+	mi := &file_medusa_v1_map_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AggregateResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AggregateResponse) ProtoMessage() {}
+
+func (x *AggregateResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_medusa_v1_map_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AggregateResponse.ProtoReflect.Descriptor instead.
+func (*AggregateResponse) Descriptor() ([]byte, []int) {
+	return file_medusa_v1_map_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *AggregateResponse) GetPartial() []byte {
+	if x != nil {
+		return x.Partial
+	}
+	return nil
+}
+
 var File_medusa_v1_map_proto protoreflect.FileDescriptor
 
 const file_medusa_v1_map_proto_rawDesc = "" +
@@ -917,7 +1017,14 @@ const file_medusa_v1_map_proto_rawDesc = "" +
 	"\fClearRequest\x12\x10\n" +
 	"\x03map\x18\x01 \x01(\tR\x03map\")\n" +
 	"\rClearResponse\x12\x18\n" +
-	"\aremoved\x18\x01 \x01(\x04R\aremovedB\x98\x01\n" +
+	"\aremoved\x18\x01 \x01(\x04R\aremoved\"D\n" +
+	"\x10AggregateRequest\x12\x10\n" +
+	"\x03map\x18\x01 \x01(\tR\x03map\x12\x1e\n" +
+	"\n" +
+	"aggregator\x18\x02 \x01(\tR\n" +
+	"aggregator\"-\n" +
+	"\x11AggregateResponse\x12\x18\n" +
+	"\apartial\x18\x01 \x01(\fR\apartialB\x98\x01\n" +
 	"\rcom.medusa.v1B\bMapProtoP\x01Z8github.com/lodgvideon/medusa/genproto/medusa/v1;medusav1\xa2\x02\x03MXX\xaa\x02\tMedusa.V1\xca\x02\tMedusa\\V1\xe2\x02\x15Medusa\\V1\\GPBMetadata\xea\x02\n" +
 	"Medusa::V1b\x06proto3"
 
@@ -933,24 +1040,26 @@ func file_medusa_v1_map_proto_rawDescGZIP() []byte {
 	return file_medusa_v1_map_proto_rawDescData
 }
 
-var file_medusa_v1_map_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_medusa_v1_map_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_medusa_v1_map_proto_goTypes = []any{
-	(*PutRequest)(nil),      // 0: medusa.v1.PutRequest
-	(*PutResponse)(nil),     // 1: medusa.v1.PutResponse
-	(*GetRequest)(nil),      // 2: medusa.v1.GetRequest
-	(*GetResponse)(nil),     // 3: medusa.v1.GetResponse
-	(*RemoveRequest)(nil),   // 4: medusa.v1.RemoveRequest
-	(*RemoveResponse)(nil),  // 5: medusa.v1.RemoveResponse
-	(*ExecuteRequest)(nil),  // 6: medusa.v1.ExecuteRequest
-	(*ExecuteResponse)(nil), // 7: medusa.v1.ExecuteResponse
-	(*SnapshotEntry)(nil),   // 8: medusa.v1.SnapshotEntry
-	(*Snapshot)(nil),        // 9: medusa.v1.Snapshot
-	(*DigestRequest)(nil),   // 10: medusa.v1.DigestRequest
-	(*DigestResponse)(nil),  // 11: medusa.v1.DigestResponse
-	(*SizeRequest)(nil),     // 12: medusa.v1.SizeRequest
-	(*SizeResponse)(nil),    // 13: medusa.v1.SizeResponse
-	(*ClearRequest)(nil),    // 14: medusa.v1.ClearRequest
-	(*ClearResponse)(nil),   // 15: medusa.v1.ClearResponse
+	(*PutRequest)(nil),        // 0: medusa.v1.PutRequest
+	(*PutResponse)(nil),       // 1: medusa.v1.PutResponse
+	(*GetRequest)(nil),        // 2: medusa.v1.GetRequest
+	(*GetResponse)(nil),       // 3: medusa.v1.GetResponse
+	(*RemoveRequest)(nil),     // 4: medusa.v1.RemoveRequest
+	(*RemoveResponse)(nil),    // 5: medusa.v1.RemoveResponse
+	(*ExecuteRequest)(nil),    // 6: medusa.v1.ExecuteRequest
+	(*ExecuteResponse)(nil),   // 7: medusa.v1.ExecuteResponse
+	(*SnapshotEntry)(nil),     // 8: medusa.v1.SnapshotEntry
+	(*Snapshot)(nil),          // 9: medusa.v1.Snapshot
+	(*DigestRequest)(nil),     // 10: medusa.v1.DigestRequest
+	(*DigestResponse)(nil),    // 11: medusa.v1.DigestResponse
+	(*SizeRequest)(nil),       // 12: medusa.v1.SizeRequest
+	(*SizeResponse)(nil),      // 13: medusa.v1.SizeResponse
+	(*ClearRequest)(nil),      // 14: medusa.v1.ClearRequest
+	(*ClearResponse)(nil),     // 15: medusa.v1.ClearResponse
+	(*AggregateRequest)(nil),  // 16: medusa.v1.AggregateRequest
+	(*AggregateResponse)(nil), // 17: medusa.v1.AggregateResponse
 }
 var file_medusa_v1_map_proto_depIdxs = []int32{
 	8, // 0: medusa.v1.Snapshot.entries:type_name -> medusa.v1.SnapshotEntry
@@ -972,7 +1081,7 @@ func file_medusa_v1_map_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_medusa_v1_map_proto_rawDesc), len(file_medusa_v1_map_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   16,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

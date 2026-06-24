@@ -410,7 +410,8 @@ func (n *Node) dispatch(reqType medusav1.MessageType, req, respBuf []byte) (medu
 		medusav1.MessageType_MESSAGE_TYPE_EXECUTE_REQUEST,
 		medusav1.MessageType_MESSAGE_TYPE_DIGEST_REQUEST,
 		medusav1.MessageType_MESSAGE_TYPE_SIZE_REQUEST,
-		medusav1.MessageType_MESSAGE_TYPE_CLEAR_REQUEST:
+		medusav1.MessageType_MESSAGE_TYPE_CLEAR_REQUEST,
+		medusav1.MessageType_MESSAGE_TYPE_AGGREGATE_REQUEST:
 		return n.maps.Handle(reqType, req, respBuf)
 	default:
 		return 0, respBuf, fmt.Errorf("medusa: unhandled message type %v", reqType)

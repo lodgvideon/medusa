@@ -28,27 +28,29 @@ const (
 type MessageType int32
 
 const (
-	MessageType_MESSAGE_TYPE_UNSPECIFIED      MessageType = 0
-	MessageType_MESSAGE_TYPE_ERROR            MessageType = 1
-	MessageType_MESSAGE_TYPE_JOIN_REQUEST     MessageType = 2
-	MessageType_MESSAGE_TYPE_JOIN_RESPONSE    MessageType = 3
-	MessageType_MESSAGE_TYPE_HEARTBEAT        MessageType = 4
-	MessageType_MESSAGE_TYPE_MEMBER_LIST      MessageType = 5
-	MessageType_MESSAGE_TYPE_PUT_REQUEST      MessageType = 6
-	MessageType_MESSAGE_TYPE_PUT_RESPONSE     MessageType = 7
-	MessageType_MESSAGE_TYPE_GET_REQUEST      MessageType = 8
-	MessageType_MESSAGE_TYPE_GET_RESPONSE     MessageType = 9
-	MessageType_MESSAGE_TYPE_REMOVE_REQUEST   MessageType = 10
-	MessageType_MESSAGE_TYPE_REMOVE_RESPONSE  MessageType = 11
-	MessageType_MESSAGE_TYPE_LEAVE            MessageType = 12
-	MessageType_MESSAGE_TYPE_EXECUTE_REQUEST  MessageType = 13
-	MessageType_MESSAGE_TYPE_EXECUTE_RESPONSE MessageType = 14
-	MessageType_MESSAGE_TYPE_DIGEST_REQUEST   MessageType = 15
-	MessageType_MESSAGE_TYPE_DIGEST_RESPONSE  MessageType = 16
-	MessageType_MESSAGE_TYPE_SIZE_REQUEST     MessageType = 17
-	MessageType_MESSAGE_TYPE_SIZE_RESPONSE    MessageType = 18
-	MessageType_MESSAGE_TYPE_CLEAR_REQUEST    MessageType = 19
-	MessageType_MESSAGE_TYPE_CLEAR_RESPONSE   MessageType = 20
+	MessageType_MESSAGE_TYPE_UNSPECIFIED        MessageType = 0
+	MessageType_MESSAGE_TYPE_ERROR              MessageType = 1
+	MessageType_MESSAGE_TYPE_JOIN_REQUEST       MessageType = 2
+	MessageType_MESSAGE_TYPE_JOIN_RESPONSE      MessageType = 3
+	MessageType_MESSAGE_TYPE_HEARTBEAT          MessageType = 4
+	MessageType_MESSAGE_TYPE_MEMBER_LIST        MessageType = 5
+	MessageType_MESSAGE_TYPE_PUT_REQUEST        MessageType = 6
+	MessageType_MESSAGE_TYPE_PUT_RESPONSE       MessageType = 7
+	MessageType_MESSAGE_TYPE_GET_REQUEST        MessageType = 8
+	MessageType_MESSAGE_TYPE_GET_RESPONSE       MessageType = 9
+	MessageType_MESSAGE_TYPE_REMOVE_REQUEST     MessageType = 10
+	MessageType_MESSAGE_TYPE_REMOVE_RESPONSE    MessageType = 11
+	MessageType_MESSAGE_TYPE_LEAVE              MessageType = 12
+	MessageType_MESSAGE_TYPE_EXECUTE_REQUEST    MessageType = 13
+	MessageType_MESSAGE_TYPE_EXECUTE_RESPONSE   MessageType = 14
+	MessageType_MESSAGE_TYPE_DIGEST_REQUEST     MessageType = 15
+	MessageType_MESSAGE_TYPE_DIGEST_RESPONSE    MessageType = 16
+	MessageType_MESSAGE_TYPE_SIZE_REQUEST       MessageType = 17
+	MessageType_MESSAGE_TYPE_SIZE_RESPONSE      MessageType = 18
+	MessageType_MESSAGE_TYPE_CLEAR_REQUEST      MessageType = 19
+	MessageType_MESSAGE_TYPE_CLEAR_RESPONSE     MessageType = 20
+	MessageType_MESSAGE_TYPE_AGGREGATE_REQUEST  MessageType = 21
+	MessageType_MESSAGE_TYPE_AGGREGATE_RESPONSE MessageType = 22
 )
 
 // Enum value maps for MessageType.
@@ -75,29 +77,33 @@ var (
 		18: "MESSAGE_TYPE_SIZE_RESPONSE",
 		19: "MESSAGE_TYPE_CLEAR_REQUEST",
 		20: "MESSAGE_TYPE_CLEAR_RESPONSE",
+		21: "MESSAGE_TYPE_AGGREGATE_REQUEST",
+		22: "MESSAGE_TYPE_AGGREGATE_RESPONSE",
 	}
 	MessageType_value = map[string]int32{
-		"MESSAGE_TYPE_UNSPECIFIED":      0,
-		"MESSAGE_TYPE_ERROR":            1,
-		"MESSAGE_TYPE_JOIN_REQUEST":     2,
-		"MESSAGE_TYPE_JOIN_RESPONSE":    3,
-		"MESSAGE_TYPE_HEARTBEAT":        4,
-		"MESSAGE_TYPE_MEMBER_LIST":      5,
-		"MESSAGE_TYPE_PUT_REQUEST":      6,
-		"MESSAGE_TYPE_PUT_RESPONSE":     7,
-		"MESSAGE_TYPE_GET_REQUEST":      8,
-		"MESSAGE_TYPE_GET_RESPONSE":     9,
-		"MESSAGE_TYPE_REMOVE_REQUEST":   10,
-		"MESSAGE_TYPE_REMOVE_RESPONSE":  11,
-		"MESSAGE_TYPE_LEAVE":            12,
-		"MESSAGE_TYPE_EXECUTE_REQUEST":  13,
-		"MESSAGE_TYPE_EXECUTE_RESPONSE": 14,
-		"MESSAGE_TYPE_DIGEST_REQUEST":   15,
-		"MESSAGE_TYPE_DIGEST_RESPONSE":  16,
-		"MESSAGE_TYPE_SIZE_REQUEST":     17,
-		"MESSAGE_TYPE_SIZE_RESPONSE":    18,
-		"MESSAGE_TYPE_CLEAR_REQUEST":    19,
-		"MESSAGE_TYPE_CLEAR_RESPONSE":   20,
+		"MESSAGE_TYPE_UNSPECIFIED":        0,
+		"MESSAGE_TYPE_ERROR":              1,
+		"MESSAGE_TYPE_JOIN_REQUEST":       2,
+		"MESSAGE_TYPE_JOIN_RESPONSE":      3,
+		"MESSAGE_TYPE_HEARTBEAT":          4,
+		"MESSAGE_TYPE_MEMBER_LIST":        5,
+		"MESSAGE_TYPE_PUT_REQUEST":        6,
+		"MESSAGE_TYPE_PUT_RESPONSE":       7,
+		"MESSAGE_TYPE_GET_REQUEST":        8,
+		"MESSAGE_TYPE_GET_RESPONSE":       9,
+		"MESSAGE_TYPE_REMOVE_REQUEST":     10,
+		"MESSAGE_TYPE_REMOVE_RESPONSE":    11,
+		"MESSAGE_TYPE_LEAVE":              12,
+		"MESSAGE_TYPE_EXECUTE_REQUEST":    13,
+		"MESSAGE_TYPE_EXECUTE_RESPONSE":   14,
+		"MESSAGE_TYPE_DIGEST_REQUEST":     15,
+		"MESSAGE_TYPE_DIGEST_RESPONSE":    16,
+		"MESSAGE_TYPE_SIZE_REQUEST":       17,
+		"MESSAGE_TYPE_SIZE_RESPONSE":      18,
+		"MESSAGE_TYPE_CLEAR_REQUEST":      19,
+		"MESSAGE_TYPE_CLEAR_RESPONSE":     20,
+		"MESSAGE_TYPE_AGGREGATE_REQUEST":  21,
+		"MESSAGE_TYPE_AGGREGATE_RESPONSE": 22,
 	}
 )
 
@@ -188,7 +194,7 @@ const file_medusa_v1_transport_proto_rawDesc = "" +
 	"\x19medusa/v1/transport.proto\x12\tmedusa.v1\"5\n" +
 	"\x05Error\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\rR\x04code\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage*\x99\x05\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage*\xe2\x05\n" +
 	"\vMessageType\x12\x1c\n" +
 	"\x18MESSAGE_TYPE_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12MESSAGE_TYPE_ERROR\x10\x01\x12\x1d\n" +
@@ -211,7 +217,9 @@ const file_medusa_v1_transport_proto_rawDesc = "" +
 	"\x19MESSAGE_TYPE_SIZE_REQUEST\x10\x11\x12\x1e\n" +
 	"\x1aMESSAGE_TYPE_SIZE_RESPONSE\x10\x12\x12\x1e\n" +
 	"\x1aMESSAGE_TYPE_CLEAR_REQUEST\x10\x13\x12\x1f\n" +
-	"\x1bMESSAGE_TYPE_CLEAR_RESPONSE\x10\x14B\x9e\x01\n" +
+	"\x1bMESSAGE_TYPE_CLEAR_RESPONSE\x10\x14\x12\"\n" +
+	"\x1eMESSAGE_TYPE_AGGREGATE_REQUEST\x10\x15\x12#\n" +
+	"\x1fMESSAGE_TYPE_AGGREGATE_RESPONSE\x10\x16B\x9e\x01\n" +
 	"\rcom.medusa.v1B\x0eTransportProtoP\x01Z8github.com/lodgvideon/medusa/genproto/medusa/v1;medusav1\xa2\x02\x03MXX\xaa\x02\tMedusa.V1\xca\x02\tMedusa\\V1\xe2\x02\x15Medusa\\V1\\GPBMetadata\xea\x02\n" +
 	"Medusa::V1b\x06proto3"
 

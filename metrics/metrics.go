@@ -17,6 +17,7 @@ var (
 	GetOps         atomic.Int64 // map Get operations
 	RemoveOps      atomic.Int64 // map Remove operations
 	ExecuteOps     atomic.Int64 // EntryProcessor executions
+	AggregateOps   atomic.Int64 // distributed aggregations issued through this node
 	Swept          atomic.Int64 // entries reclaimed by TTL expiry
 	Evicted        atomic.Int64 // peers removed by failure detection
 	Migrations     atomic.Int64 // partition-migration passes run
@@ -49,6 +50,7 @@ func WriteProm(w io.Writer, g Gauges) {
 		[2]any{"get", GetOps.Load()},
 		[2]any{"remove", RemoveOps.Load()},
 		[2]any{"execute", ExecuteOps.Load()},
+		[2]any{"aggregate", AggregateOps.Load()},
 	)
 	fmt.Fprintf(w, "# HELP medusa_entries_swept_total Entries reclaimed by TTL expiry.\n")
 	fmt.Fprintf(w, "# TYPE medusa_entries_swept_total counter\nmedusa_entries_swept_total %d\n", Swept.Load())

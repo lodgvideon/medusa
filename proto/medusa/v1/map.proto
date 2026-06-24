@@ -99,3 +99,16 @@ message ClearRequest {
 message ClearResponse {
   uint64 removed = 1; // entries removed on the responding member
 }
+
+// AggregateRequest asks a peer to reduce the entries it OWNS for a named map with
+// a named aggregator, returning that member's partial. A cluster-wide map-reduce:
+// every member reduces its share and the caller combines the partials, so each
+// entry is folded exactly once (never a backup copy).
+message AggregateRequest {
+  string map = 1;
+  string aggregator = 2; // registered aggregator name (e.g. "count", "sum")
+}
+
+message AggregateResponse {
+  bytes partial = 1; // aggregator-encoded partial; empty means the member owns no entries
+}

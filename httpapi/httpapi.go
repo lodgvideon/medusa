@@ -5,13 +5,16 @@ package httpapi
 
 import (
 	"crypto/subtle"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/lodgvideon/medusa"
+	"github.com/lodgvideon/medusa/imap"
 	"github.com/lodgvideon/medusa/metrics"
 )
 
@@ -45,6 +48,10 @@ func WithToken(token string) Option {
 //	GET    /v1/maps/{map}            cluster-wide live entry count for the map
 //	                                 (502 + X-Medusa-Partial-Count header if a
 //	                                 member is unreachable — count is a lower bound)
+//	GET    /v1/maps/{map}?agg=<name> cluster-wide aggregation (count/sum/min/max or
+//	                                 a registered custom one); 400 if the aggregator
+//	                                 is unknown, 502 + X-Medusa-Partial-Result if a
+//	                                 member is unreachable
 //	GET    /v1/maps/{map}/{key}      fetch a value (404 if absent)
 //	PUT    /v1/maps/{map}/{key}      store the request body as the value
 //	DELETE /v1/maps/{map}/{key}      remove a key (404 if absent)
@@ -99,7 +106,26 @@ func New(node *medusa.Node, opts ...Option) http.Handler {
 	})
 
 	mux.HandleFunc("GET /v1/maps/{map}", func(w http.ResponseWriter, r *http.Request) {
-		n, err := node.Map(r.PathValue("map")).Size(r.Context())
+		m := node.Map(r.PathValue("map"))
+		// ?agg=<name> runs a cluster-wide aggregation instead of a plain count.
+		if agg := r.URL.Query().Get("agg"); agg != "" {
+			res, err := m.Aggregate(r.Context(), agg)
+			if errors.Is(err, imap.ErrUnknownAggregator) {
+				writeText(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			body := renderAggregate(res)
+			if err != nil {
+				// A member was unreachable: res covers only the reachable members.
+				// Mirror Size's degraded contract — 502, partial value in a header.
+				w.Header().Set("X-Medusa-Partial-Result", body)
+				writeText(w, http.StatusBadGateway, err.Error())
+				return
+			}
+			writeText(w, http.StatusOK, body)
+			return
+		}
+		n, err := m.Size(r.Context())
 		if err != nil {
 			// A member was unreachable, so n is only a lower bound over the
 			// reachable members. Signal the degraded state with 502, but expose the
@@ -239,4 +265,19 @@ func writeText(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(status)
 	_, _ = io.WriteString(w, msg)
+}
+
+// renderAggregate turns an aggregator result into text for the HTTP layer. The
+// numeric built-ins (count/sum/min/max) encode a big-endian int64, rendered as a
+// decimal; an empty result (min/max over an empty map) renders as the empty
+// string; any other length is returned verbatim for custom aggregators.
+func renderAggregate(res []byte) string {
+	switch len(res) {
+	case 0:
+		return ""
+	case 8:
+		return strconv.FormatInt(int64(binary.BigEndian.Uint64(res)), 10)
+	default:
+		return string(res)
+	}
 }

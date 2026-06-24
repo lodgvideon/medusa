@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/lodgvideon/medusa/metrics"
@@ -341,6 +342,49 @@ func (mp *Map) Clear(ctx context.Context) error {
 		}
 	}
 	return firstErr
+}
+
+// Aggregate runs a registered aggregator across the whole cluster (a distributed
+// map-reduce): every member reduces the entries it owns to a partial and the
+// caller combines the partials. The result encoding is aggregator-specific — the
+// built-ins count/sum/min/max return a big-endian int64, and min/max return an
+// empty slice over an empty map. The result is approximate during a rebalance
+// (ownership briefly in flux). If a member is unreachable its share is omitted and
+// the error is non-nil — the result then covers only the reachable members.
+func (mp *Map) Aggregate(ctx context.Context, aggregator string) ([]byte, error) {
+	metrics.AggregateOps.Add(1)
+	agg, ok := lookupAggregator(aggregator)
+	if !ok {
+		return nil, fmt.Errorf("%w %q", ErrUnknownAggregator, aggregator)
+	}
+	var (
+		partials [][]byte
+		firstErr error
+	)
+	for _, m := range mp.svc.mem.Members() {
+		if m.ID == mp.svc.self {
+			p, err := mp.svc.localAggregate(mp.name, aggregator)
+			if err != nil {
+				return nil, err // misconfiguration (unknown locally) — fail fast, not partial
+			}
+			partials = append(partials, p)
+			continue
+		}
+		p, err := mp.svc.sendAggregate(ctx, m.Addr, mp.name, aggregator)
+		if err != nil {
+			if errors.Is(err, ErrUnknownAggregator) {
+				return nil, err // a peer lacks the aggregator: a config error, not a
+				// transient one — fail fast rather than return a partial that
+				// silently omits that peer's share.
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		partials = append(partials, p)
+	}
+	return agg.Combine(partials), firstErr
 }
 
 // Remove deletes key, returning whether it existed.

@@ -6,7 +6,9 @@ package imap
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/lodgvideon/medusa/cluster"
@@ -576,6 +578,22 @@ func (s *Service) localMapSize(name string) int {
 	return s.store.countMap(name, func(p int) bool { return tbl.OwnerOf(p) == s.self })
 }
 
+// localAggregate reduces this node's OWNED entries for the named map with the
+// named aggregator, returning that member's partial. It is the member side of the
+// distributed map-reduce (the caller combines partials from every member). The
+// reduce runs outside the shard locks: collectOwnedValues snapshots the owned
+// values (which alias immutable stored slices) under brief read locks, then the
+// aggregator folds them — so a slow custom aggregator never holds a shard lock.
+func (s *Service) localAggregate(name, aggName string) ([]byte, error) {
+	agg, ok := lookupAggregator(aggName)
+	if !ok {
+		return nil, fmt.Errorf("%w %q", ErrUnknownAggregator, aggName)
+	}
+	tbl := s.mem.Table()
+	values := s.store.collectOwnedValues(name, func(p int) bool { return tbl.OwnerOf(p) == s.self })
+	return agg.Reduce(values), nil
+}
+
 // localClearMap removes all entries this node holds for the named map (owner and
 // backup copies) and records the clear durably as ONE WAL record, so a crash
 // before the next checkpoint replays the clear (not the pre-clear entries). It
@@ -653,6 +671,46 @@ func (s *Service) sendSize(ctx context.Context, addr, name string) (uint64, erro
 		return 0, err
 	}
 	return sr.Count, nil
+}
+
+// sendAggregate asks a peer to reduce the entries it owns for the named map with
+// the named aggregator, returning that member's partial.
+func (s *Service) sendAggregate(ctx context.Context, addr, name, aggName string) ([]byte, error) {
+	reqBuf := codec.GetBuf()
+	dstBuf := codec.GetBuf()
+	defer codec.PutBuf(reqBuf)
+	defer codec.PutBuf(dstBuf)
+
+	rb, err := codec.Marshal((*reqBuf)[:0], &medusav1.AggregateRequest{Map: name, Aggregator: aggName})
+	if err != nil {
+		return nil, err
+	}
+	*reqBuf = rb
+
+	respType, resp, err := s.tr.Send(ctx, addr, medusav1.MessageType_MESSAGE_TYPE_AGGREGATE_REQUEST, rb, (*dstBuf)[:0])
+	*dstBuf = resp
+	if err != nil {
+		// The transport flattens a peer's handler error to a message string, losing
+		// the wrapped sentinel. A peer that doesn't know the aggregator is a config
+		// error, NOT an unreachable peer: re-wrap it so the caller fails fast (and
+		// the HTTP layer returns 400) rather than silently dropping that peer's
+		// share and reporting a wrong partial. Matched on the sentinel's own text.
+		var re *transport.RemoteError
+		if errors.As(err, &re) && strings.Contains(re.Message, ErrUnknownAggregator.Error()) {
+			return nil, fmt.Errorf("%w (peer %s)", ErrUnknownAggregator, addr)
+		}
+		return nil, err
+	}
+	if respType != medusav1.MessageType_MESSAGE_TYPE_AGGREGATE_RESPONSE {
+		return nil, fmt.Errorf("imap: unexpected aggregate response type %v", respType)
+	}
+	var ar medusav1.AggregateResponse
+	if err := ar.UnmarshalVT(resp); err != nil {
+		return nil, err
+	}
+	// ar.Partial was freshly allocated by UnmarshalVT, so it is safe to retain
+	// after dstBuf returns to the pool.
+	return ar.Partial, nil
 }
 
 // Snapshot serializes every live entry on this node for persistence.
@@ -839,6 +897,18 @@ func (s *Service) Handle(reqType medusav1.MessageType, req, respBuf []byte) (med
 		}
 		out, err := codec.Marshal(respBuf, &medusav1.ClearResponse{Removed: uint64(removed)})
 		return medusav1.MessageType_MESSAGE_TYPE_CLEAR_RESPONSE, out, err
+
+	case medusav1.MessageType_MESSAGE_TYPE_AGGREGATE_REQUEST:
+		var ar medusav1.AggregateRequest
+		if err := ar.UnmarshalVT(req); err != nil {
+			return 0, respBuf, err
+		}
+		partial, aerr := s.localAggregate(ar.Map, ar.Aggregator)
+		if aerr != nil {
+			return 0, respBuf, aerr
+		}
+		out, err := codec.Marshal(respBuf, &medusav1.AggregateResponse{Partial: partial})
+		return medusav1.MessageType_MESSAGE_TYPE_AGGREGATE_RESPONSE, out, err
 
 	default:
 		return 0, respBuf, fmt.Errorf("imap: unhandled message type %v", reqType)

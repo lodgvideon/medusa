@@ -176,6 +176,17 @@ else
   bad "Map.Size -> $out (want 6)"
 fi
 
+# ---- test: distributed aggregation ----
+# The same 6 entries aggregated cluster-wide from a third pod via ?agg=count — the
+# map-reduce scatter-gather: each owner reduces its share, the caller combines.
+echo "=== test: aggregation (cluster-wide count) ==="
+out=$(incluster 'curl -s "medusa-2.medusa:8080/v1/maps/sized?agg=count"')
+if [ "$out" = "6" ]; then
+  ok "aggregation ?agg=count totalled 6 cluster-wide from a third pod"
+else
+  bad "aggregation count -> $out (want 6)"
+fi
+
 # ---- test: cluster-wide Map.Clear ----
 # Clear the map via one pod (DELETE on the map root); the size from another pod
 # must then be 0 — every member dropped its copies (owner and backup).

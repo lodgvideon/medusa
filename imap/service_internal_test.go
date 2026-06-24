@@ -581,6 +581,22 @@ func TestMigrateReportsCompletionAndHonorsContext(t *testing.T) {
 	}
 }
 
+// TestSendAggregateClassifiesUnknownAggregator is the regression guard for the
+// review finding that a peer lacking the aggregator looked like an unreachable
+// peer (silently-wrong partial + 502). sendAggregate must re-wrap the remote
+// error as ErrUnknownAggregator so the caller fails fast; a generic transport
+// error must NOT be reclassified.
+func TestSendAggregateClassifiesUnknownAggregator(t *testing.T) {
+	re := &transport.RemoteError{Message: ErrUnknownAggregator.Error() + ` "custom"`}
+	if _, err := svcWith(&fakeTransport{err: re}).sendAggregate(context.Background(), "peer", "m", "custom"); !errors.Is(err, ErrUnknownAggregator) {
+		t.Fatalf("remote unknown-aggregator err = %v, want wrapped ErrUnknownAggregator", err)
+	}
+	boom := errors.New("connection reset")
+	if _, err := svcWith(&fakeTransport{err: boom}).sendAggregate(context.Background(), "peer", "m", "count"); errors.Is(err, ErrUnknownAggregator) {
+		t.Fatalf("a generic transport error must not be classified as ErrUnknownAggregator: %v", err)
+	}
+}
+
 func TestHandleRejectsCorruptPayload(t *testing.T) {
 	svc := svcWith(&fakeTransport{})
 	bad := []byte{0xff, 0xff, 0xff} // not a valid protobuf message
