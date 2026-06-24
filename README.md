@@ -112,10 +112,17 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   content hash and transfers data *only* to backups that report a mismatch, so a
   steady-state pass over in-sync replicas costs one tiny digest RPC per backup
   and moves nothing. A backup that missed a write during a transient blip is
-  detected by the digest and healed without waiting for a rebalance. It is
-  push-only (heals missing/stale values; reconciling a key a backup kept after
-  missing a delete needs the roadmapped replace semantics), and the
-  `medusa_entries_reconciled_total` metric counts the re-pushed entries.
+  detected by the digest and healed without waiting for a rebalance. It heals
+  **both** divergence directions: a **push** re-sends values a backup is missing
+  or stale on, and a **prune** drops a key a backup *kept* after missing the
+  owner's delete (a "zombie" that would otherwise resurrect on failover) — the
+  owner sends its authoritative key set for the partition and the backup deletes
+  anything not in it. Because medusa is single-owner, the owner's current content
+  fully defines what a backup must hold, so this needs no per-entry versioning or
+  tombstones. A backup that itself believes it owns the partition ignores the
+  prune, so a stale ex-owner cannot delete the new owner's data during a
+  membership transition. `medusa_entries_reconciled_total` counts re-pushed
+  entries; `medusa_entries_pruned_total` counts zombie keys dropped.
 - **Elastic scaling** — when a node joins, the partitions it now owns migrate to
   it automatically (verified in k8s: scaling 3→5 redistributes data and the new
   pods serve their share). Each rebalance is time-boxed to one maintenance
@@ -412,11 +419,6 @@ bash k8s/e2e.sh            # or: go test -tags k8s -run TestK8sE2E -timeout 15m 
 
 ### Roadmap
 
-- Replace-semantics reconciliation: extend the digest-gated anti-entropy so that
-  on a mismatch the backup also *removes* keys the owner no longer holds (missed
-  deletes), not just receives missing/stale values — the push-only residual.
-  Doing it safely needs a per-entry version so a freshly-replicated write is not
-  pruned by a slightly-stale reconcile manifest.
 - Strict fence monotonicity: synchronous/consensus replication or a quiescent
   partition handoff so the fenced-lock token stays strictly increasing even
   across an ungraceful crash or a migration window (today it can be reissued in

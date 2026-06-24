@@ -32,6 +32,8 @@ enum MessageType {
   MESSAGE_TYPE_AGGREGATE_RESPONSE = 22;
   MESSAGE_TYPE_EVICT_REQUEST = 23;
   MESSAGE_TYPE_EVICT_RESPONSE = 24;
+  MESSAGE_TYPE_RECONCILE_REQUEST = 25;
+  MESSAGE_TYPE_RECONCILE_RESPONSE = 26;
 }
 
 // Error is returned in place of a response payload when an RPC fails.

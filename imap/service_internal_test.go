@@ -11,6 +11,7 @@ import (
 
 	"github.com/lodgvideon/medusa/cluster"
 	medusav1 "github.com/lodgvideon/medusa/genproto/medusa/v1"
+	"github.com/lodgvideon/medusa/metrics"
 	"github.com/lodgvideon/medusa/partition"
 	"github.com/lodgvideon/medusa/transport"
 )
@@ -71,6 +72,21 @@ func TestSendHelpersPropagateTransportError(t *testing.T) {
 	}
 	if _, err := svc.sendRemove(ctx, "peer", "m", []byte("k"), false); !errors.Is(err, boom) {
 		t.Errorf("sendRemove err = %v, want boom", err)
+	}
+}
+
+func TestSendReconcileRejectsUnexpectedType(t *testing.T) {
+	svc := svcWith(&fakeTransport{respType: medusav1.MessageType_MESSAGE_TYPE_GET_RESPONSE})
+	if _, err := svc.sendReconcile(context.Background(), "peer", 0, nil); err == nil {
+		t.Fatal("want error on unexpected reconcile response type")
+	}
+}
+
+func TestSendReconcilePropagatesTransportError(t *testing.T) {
+	boom := errors.New("transport down")
+	svc := svcWith(&fakeTransport{err: boom})
+	if _, err := svc.sendReconcile(context.Background(), "peer", 0, nil); !errors.Is(err, boom) {
+		t.Errorf("sendReconcile err = %v, want boom", err)
 	}
 }
 
@@ -387,6 +403,163 @@ func TestMigrateWALsHandoffDropNoResurrection(t *testing.T) {
 	defer a2.CloseWAL()
 	if _, ok := a2.store.get(p, "m", key); ok {
 		t.Fatal("migrated-away key resurrected after crash+replay; the hand-off drop was not WAL'd")
+	}
+}
+
+// TestPruneToKeyset covers the store delete-side of anti-entropy: every key in a
+// partition that is NOT in the owner's authoritative key set is dropped (across
+// all maps), the kept keys survive, the dropped entries are returned for WAL
+// recording, and emptied map buckets are reclaimed.
+func TestPruneToKeyset(t *testing.T) {
+	st := newStore()
+	const p = 0 // put directly into one partition (store.put takes p, not partition.For)
+	st.put(p, "m", []byte("keep"), []byte("v1"), 0)
+	st.put(p, "m", []byte("drop"), []byte("v2"), 0)
+	st.put(p, "other", []byte("gonetoo"), []byte("v3"), 0)
+
+	keep := map[string]map[string]struct{}{"m": {"keep": {}}}
+	dropped := st.pruneToKeyset(p, keep)
+	if len(dropped) != 2 {
+		t.Fatalf("dropped %d entries, want 2 (drop + gonetoo)", len(dropped))
+	}
+	if _, ok := st.get(p, "m", []byte("keep")); !ok {
+		t.Fatal("a key in the owner's set was wrongly pruned")
+	}
+	if _, ok := st.get(p, "m", []byte("drop")); ok {
+		t.Fatal("an unlisted key was not pruned")
+	}
+	if _, ok := st.get(p, "other", []byte("gonetoo")); ok {
+		t.Fatal("an unlisted key in another map was not pruned")
+	}
+	st.shards[p].mu.RLock()
+	_, exists := st.shards[p].m["other"]
+	st.shards[p].mu.RUnlock()
+	if exists {
+		t.Fatal("the emptied map bucket should have been reclaimed")
+	}
+}
+
+// TestSyncBackupsPrunesZombieKey is the core missed-delete property: a backup
+// that KEPT a key after missing the owner's delete (a "zombie") is dropped by an
+// anti-entropy pass — the gap push-only sync could never close. The owner is the
+// single source of truth, so its current key set defines what the backup holds.
+func TestSyncBackupsPrunesZombieKey(t *testing.T) {
+	a, b, aMem := twoNodeServices(t)
+	tbl := aMem.Table()
+	p, key := ownedByAWithBackupB(t, tbl)
+
+	// In sync: both hold the key.
+	a.store.put(p, "m", key, []byte("v"), 0)
+	b.store.put(p, "m", key, []byte("v"), 0)
+	// The owner deletes it; the backup misses the delete (the zombie).
+	a.store.remove(p, "m", key)
+	if _, ok := b.store.get(p, "m", key); !ok {
+		t.Fatal("precondition: backup should still hold the zombie key")
+	}
+
+	before := metrics.Pruned.Load()
+	a.SyncBackups(context.Background(), tbl, p, 1)
+
+	if _, ok := b.store.get(p, "m", key); ok {
+		t.Fatal("zombie key not pruned from the backup after anti-entropy")
+	}
+	if got := metrics.Pruned.Load() - before; got != 1 {
+		t.Fatalf("metrics.Pruned delta = %d, want 1", got)
+	}
+}
+
+// TestReconcileOwnerGateIgnoresPrune verifies the safety valve: a node that
+// believes it OWNS a partition ignores a reconcile request for it, so a stale
+// ex-owner (or any peer) cannot drive the owner to delete its own live data
+// during a membership transition. Worst case degrades to a one-tick delay.
+func TestReconcileOwnerGateIgnoresPrune(t *testing.T) {
+	a, _, aMem := twoNodeServices(t)
+	tbl := aMem.Table()
+	p, key := ownedByAWithBackupB(t, tbl) // a OWNS p
+	a.store.put(p, "m", key, []byte("v"), 0)
+
+	// A reconcile arrives for a partition a owns, carrying an empty key set (as a
+	// stale ex-owner might). The owner-gate must ignore it.
+	req := &medusav1.ReconcileRequest{Partition: uint32(p)}
+	bts, err := req.MarshalVT()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	rt, out, err := a.Handle(medusav1.MessageType_MESSAGE_TYPE_RECONCILE_REQUEST, bts, nil)
+	if err != nil {
+		t.Fatalf("handle reconcile: %v", err)
+	}
+	if rt != medusav1.MessageType_MESSAGE_TYPE_RECONCILE_RESPONSE {
+		t.Fatalf("response type = %v, want RECONCILE_RESPONSE", rt)
+	}
+	var rr medusav1.ReconcileResponse
+	if err := rr.UnmarshalVT(out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if rr.Pruned != 0 {
+		t.Fatalf("owner pruned %d of its own data; want 0", rr.Pruned)
+	}
+	if _, ok := a.store.get(p, "m", key); !ok {
+		t.Fatal("owner-gate failed: the owner pruned its own live key on a peer's say-so")
+	}
+}
+
+// TestHandleReconcileRequestOutOfRange verifies an out-of-range partition on the
+// wire is rejected with an error rather than panicking on a slice index.
+func TestHandleReconcileRequestOutOfRange(t *testing.T) {
+	svc := svcWith(&fakeTransport{})
+	req := &medusav1.ReconcileRequest{Partition: uint32(partition.Count) + 3}
+	b, err := req.MarshalVT()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if _, _, err := svc.Handle(medusav1.MessageType_MESSAGE_TYPE_RECONCILE_REQUEST, b, nil); err == nil {
+		t.Fatal("out-of-range reconcile partition must return an error, not panic")
+	}
+}
+
+// TestPruneToKeysetLoggedWALNoResurrection guards the prune durability path,
+// mirroring the migrate/clear WAL guards: a prune records a [REMOVE] per dropped
+// key, so a crash before the next checkpoint replays the prune (not the pre-prune
+// snapshot) — a missed-delete reconciliation is itself durable.
+func TestPruneToKeysetLoggedWALNoResurrection(t *testing.T) {
+	walPath := filepath.Join(t.TempDir(), "wal.log")
+	s := svcWith(&fakeTransport{})
+	if err := s.OpenWAL(walPath); err != nil {
+		t.Fatalf("open wal: %v", err)
+	}
+	ctx := context.Background()
+	key := []byte("zombie")
+	p := partition.For(key)
+	if _, err := s.applyPut(ctx, "m", key, []byte("v"), 0, true); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	var snap *medusav1.Snapshot
+	if err := s.Checkpoint(func(sn *medusav1.Snapshot) error { snap = sn; return nil }); err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	// Prune the partition to an empty key set: the key is dropped + WAL-recorded.
+	if n := s.pruneToKeysetLogged(p, map[string]map[string]struct{}{}); n != 1 {
+		t.Fatalf("pruned %d, want 1", n)
+	}
+	if _, ok := s.store.get(p, "m", key); ok {
+		t.Fatal("precondition: the key should be pruned locally")
+	}
+	if err := s.CloseWAL(); err != nil { // crash before the next checkpoint
+		t.Fatalf("close wal: %v", err)
+	}
+
+	s2 := svcWith(&fakeTransport{})
+	s2.Restore(snap)
+	if _, ok := s2.store.get(p, "m", key); !ok {
+		t.Fatal("snapshot should hold the key before replay (test setup)")
+	}
+	if err := s2.OpenWAL(walPath); err != nil {
+		t.Fatalf("reopen wal: %v", err)
+	}
+	defer s2.CloseWAL()
+	if _, ok := s2.store.get(p, "m", key); ok {
+		t.Fatal("pruned key resurrected after crash+replay; the prune was not WAL'd")
 	}
 }
 

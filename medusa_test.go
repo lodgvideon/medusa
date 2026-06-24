@@ -682,6 +682,39 @@ func TestNodeLoadEvictRoutes(t *testing.T) {
 	}
 }
 
+// TestNodeReconcileRoutes is the dispatch-router regression guard for the
+// missed-delete reconciliation wire type: a RECONCILE_REQUEST must be routed to
+// maps.Handle by the node dispatcher, not only handled inside imap.Handle. A
+// frame sent straight at the node must come back as a RECONCILE_RESPONSE rather
+// than failing with "unhandled message type". (The imap-level prune test bypasses
+// the router, exactly the gap that bit AGGREGATE before it was routed.)
+func TestNodeReconcileRoutes(t *testing.T) {
+	sw := transport.NewSwitch()
+	srvTr := sw.NewTransport("srv")
+	n, err := medusa.New(medusa.Config{ID: "srv", Addr: "srv", Transport: srvTr})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = n.Close() })
+
+	cli := sw.NewTransport("cli")
+	t.Cleanup(func() { _ = cli.Close() })
+
+	req := &medusav1.ReconcileRequest{Partition: 0} // empty key set
+	b, err := req.MarshalVT()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	rt, _, err := cli.Send(context.Background(), "srv",
+		medusav1.MessageType_MESSAGE_TYPE_RECONCILE_REQUEST, b, nil)
+	if err != nil {
+		t.Fatalf("reconcile request not routed through node dispatch: %v", err)
+	}
+	if rt != medusav1.MessageType_MESSAGE_TYPE_RECONCILE_RESPONSE {
+		t.Fatalf("response type = %v, want RECONCILE_RESPONSE", rt)
+	}
+}
+
 func TestNewFailsOnBusyAddr(t *testing.T) {
 	addr := freeAddr(t)
 	first, err := medusa.New(medusa.Config{Addr: addr})
