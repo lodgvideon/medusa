@@ -122,8 +122,11 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   acknowledged write; a checkpoint truncates the WAL after each snapshot to
   bound replay. Verified in k8s: delete all pods, data reloads from each PVC.
 - **Cluster membership** — nodes join via seeds, gossip their views to
-  converge, and a heartbeat detector evicts a peer after several missed beats
-  (tombstoned so gossip can't resurrect it; an explicit rejoin clears it). No
+  converge, and a phi-accrual detector evicts a peer once its heartbeat silence
+  grows improbable for the link's observed jitter — adaptive, so a slow link is
+  not false-evicted (a new peer uses a fixed missed-beat count until it has
+  history). Evicted peers are tombstoned so gossip can't resurrect them; an
+  explicit rejoin clears the tombstone. No
   coordinator: each node derives an identical partition table from the (sorted)
   member set. Crashes are survived with zero data loss (verified in k8s by
   force-killing a pod).
@@ -348,9 +351,11 @@ bash k8s/e2e.sh            # or: go test -tags k8s -run TestK8sE2E -timeout 15m 
   so it tolerates that many simultaneous failures. Replication is synchronous
   and fan-out style (no quorum, no read-repair yet); more backups cost
   proportionally more write traffic and memory.
-- **Simple failure detector.** A single missed heartbeat evicts. Fine for small
-  clusters and tests; a production detector needs N consecutive misses
-  (phi-accrual) to ride out transient blips.
+- **Active phi-accrual failure detection.** Each node pings its peers (a pull
+  model, not passive heartbeat reception) and evicts one when its phi suspicion
+  reaches 8 — adaptive to the link's jitter, so transient blips are tolerated. A
+  peer with too little history falls back to a fixed missed-beat count. The
+  threshold is a constant (Akka's 8.0); it is not yet configurable.
 - **Read-only returned slices.** Local `Get` returns the stored slice directly
   to stay alloc-free; callers must not mutate it.
 - **Poseidon HTTP/2 as the default transport.** Node-to-node RPC dogfoods the
@@ -374,4 +379,3 @@ bash k8s/e2e.sh            # or: go test -tags k8s -run TestK8sE2E -timeout 15m 
   those cases — see the `Map.Lock` caveat).
 - Intern map names (or use integer map handles) to make the remote read path
   fully zero-alloc.
-- Phi-accrual failure detection with a background heartbeat loop.

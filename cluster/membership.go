@@ -27,8 +27,9 @@ type Membership struct {
 	version  uint64 // bumps on any membership change (incl. address-only updates)
 	tableVer uint64 // bumps only when the partition table is rebuilt (the id set changed)
 	table    *partition.Table
-	misses   map[string]uint8 // consecutive failed heartbeats per member id
-	removed  map[string]int64 // tombstones (id -> unix nano removed) suppressing gossip re-add
+	misses   map[string]uint8       // consecutive failed heartbeats per member id
+	phi      map[string]*phiHistory // per-peer heartbeat-interval history for phi-accrual detection
+	removed  map[string]int64       // tombstones (id -> unix nano removed) suppressing gossip re-add
 }
 
 // New creates a Membership containing only self and bound to tr. backups is the
@@ -43,6 +44,7 @@ func New(self Member, tr transport.Transport, backups int) *Membership {
 		backups: backups,
 		members: map[string]Member{self.ID: self},
 		misses:  map[string]uint8{},
+		phi:     map[string]*phiHistory{},
 		removed: map[string]int64{},
 	}
 	m.rebuildLocked()
@@ -163,6 +165,7 @@ func (m *Membership) removeLocked(id string) bool {
 	}
 	delete(m.members, id)
 	delete(m.misses, id)
+	delete(m.phi, id)                     // a rejoining peer rebuilds its heartbeat history from scratch
 	m.removed[id] = time.Now().UnixNano() // tombstone so gossip does not resurrect it
 	m.version++
 	m.rebuildLocked()
@@ -180,6 +183,9 @@ func (m *Membership) rejoin(mem Member) {
 	defer m.mu.Unlock()
 	delete(m.removed, mem.ID)
 	delete(m.misses, mem.ID) // an explicit JOIN proves liveness — reset the failure count
+	delete(m.phi, mem.ID)    // and the heartbeat history, so the first ping after a
+	// restart does not record a downtime-spanning interval that would corrupt the
+	// estimator (matches removeLocked; a rejoining peer starts its history fresh).
 	if existing, ok := m.members[mem.ID]; !ok || existing.Addr != mem.Addr {
 		m.members[mem.ID] = mem
 		m.version++
@@ -285,10 +291,10 @@ func (m *Membership) Ping(ctx context.Context, addr string) error {
 }
 
 // CheckLiveness pings every peer and removes any that fail to respond,
-// returning the evicted ids. This failure detector is intentionally simple: a
-// single missed heartbeat evicts. That is fine for tests and small clusters; a
-// production detector would require several consecutive misses (e.g. phi
-// accrual) to tolerate transient blips.
+// returning the evicted ids. This detector is intentionally blunt — a single
+// missed heartbeat evicts — and is kept for tests and one-shot liveness checks.
+// The maintenance loop instead uses DetectFailures, whose phi-accrual detector
+// tolerates transient blips (see phi.go).
 func (m *Membership) CheckLiveness(ctx context.Context) []string {
 	var evicted []string
 	for _, peer := range m.Members() {
@@ -304,11 +310,15 @@ func (m *Membership) CheckLiveness(ctx context.Context) []string {
 	return evicted
 }
 
-// DetectFailures pings every peer once and evicts a peer only after it has
-// missed `threshold` consecutive heartbeats — so a transient blip does not
-// remove a healthy node. A successful heartbeat resets the peer's miss count.
-// Returns the ids evicted on this call. Evicting bumps the membership version,
-// which triggers a rebalance and data migration on the surviving nodes.
+// DetectFailures pings every peer once and evicts those judged dead, returning
+// the ids evicted (evicting bumps the membership version, which triggers a
+// rebalance and data migration on the surviving nodes). Once a peer has enough
+// heartbeat history it is judged by phi-accrual (see phi.go): suspicion rises
+// smoothly with the silence since its last reply, scaled by the link's observed
+// jitter, and it is evicted when phi reaches defaultPhiThreshold. Until then the
+// simpler rule applies — evict after `threshold` consecutive missed heartbeats —
+// so a transient blip never removes a healthy node. A successful heartbeat
+// records the interval (feeding the estimator) and resets the miss count.
 func (m *Membership) DetectFailures(ctx context.Context, threshold uint8) []string {
 	if threshold == 0 {
 		threshold = 1
@@ -318,26 +328,39 @@ func (m *Membership) DetectFailures(ctx context.Context, threshold uint8) []stri
 		if peer.ID == m.self.ID {
 			continue
 		}
-		if err := m.Ping(ctx, peer.Addr); err != nil {
-			// Increment, test the threshold, and evict as one critical section so
-			// a concurrent rejoin cannot slip between the decision and the removal.
-			// Only touch misses while the peer is still a member: a concurrent
-			// path (e.g. a LEAVE) may have evicted it after the Members snapshot,
-			// and incrementing then would orphan a misses entry that removeLocked
-			// (returning false for an absent member) never cleans up.
-			m.mu.Lock()
-			if _, ok := m.members[peer.ID]; ok {
+		err := m.Ping(ctx, peer.Addr)
+		now := time.Now().UnixNano()
+		// Record/decide as one critical section so a concurrent rejoin cannot slip
+		// between the decision and the removal. Only touch a still-present member:
+		// a concurrent path (e.g. a LEAVE) may have evicted it after the Members
+		// snapshot, and touching it then would orphan an entry removeLocked (which
+		// returns false for an absent member) never cleans up.
+		m.mu.Lock()
+		if _, ok := m.members[peer.ID]; ok {
+			h := m.phi[peer.ID]
+			if h == nil {
+				h = newPhiHistory()
+				m.phi[peer.ID] = h
+			}
+			if err == nil {
+				h.record(now)             // feed the estimator
+				delete(m.misses, peer.ID) // healthy: reset the miss count
+			} else {
 				m.misses[peer.ID]++
-				if m.misses[peer.ID] >= threshold && m.removeLocked(peer.ID) {
+				// A warm peer is judged by phi-accrual (jitter-adaptive); until then
+				// fall back to the fixed consecutive-miss count.
+				var suspect bool
+				if h.warm() {
+					suspect = h.phi(now) >= defaultPhiThreshold
+				} else {
+					suspect = m.misses[peer.ID] >= threshold
+				}
+				if suspect && m.removeLocked(peer.ID) {
 					evicted = append(evicted, peer.ID)
 				}
 			}
-			m.mu.Unlock()
-		} else {
-			m.mu.Lock()
-			delete(m.misses, peer.ID) // healthy: reset miss count
-			m.mu.Unlock()
 		}
+		m.mu.Unlock()
 	}
 	return evicted
 }
