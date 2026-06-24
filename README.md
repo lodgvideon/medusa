@@ -259,7 +259,10 @@ to marshal into buffers we own and reuse. Concretely:
   (`TestUnmarshalZeroAlloc`).
 - **Local map read** (`Map.Get` on a locally-owned key): **0 allocs**
   (`TestLocalGetZeroAlloc`) — `m[string(key)]` lookups are alloc-free by the Go
-  compiler, and the stored value slice is returned directly (read-only).
+  compiler, and the stored value slice is returned directly (read-only). The read
+  path stays allocation-free even with an entry listener and a `MapLoader`
+  configured (`TestGetZeroAllocWithFeatures`): a Get neither emits an event (only
+  writes do) nor consults the loader on a hit, so it is decoupled from both.
 - **Server read handler** marshals the value straight into the connection's
   reusable response buffer.
 
