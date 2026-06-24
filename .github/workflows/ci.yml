@@ -6,12 +6,20 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # push → our self-hosted runner in Kubernetes (k8s/runner.yaml); pull_request
+    # (incl. untrusted forks) → GitHub-hosted. Never run fork code on self-hosted.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "medusa"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      # GitHub-hosted images ship gcc; the self-hosted runner image may not, and
+      # `go test -race` needs a C compiler. No-op when gcc is already present.
+      - name: ensure C toolchain for -race (self-hosted)
+        if: runner.environment != 'github-hosted'
+        run: command -v gcc >/dev/null || { sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc; }
 
       - name: gofmt
         run: |
@@ -27,10 +35,10 @@ jobs:
       - name: build
         run: go build ./...
 
-      # The race detector runs here (ubuntu runners have a C compiler), covering
-      # ground the dev machine cannot — it has no cgo toolchain. -coverpkg=./...
-      # so cross-package exercise (integration tests driving inner packages)
-      # counts toward each package's coverage.
+      # The race detector runs here (the C compiler is present natively on
+      # GitHub-hosted, installed above on self-hosted), covering ground the dev
+      # machine cannot — it has no cgo toolchain. -coverpkg=./... so cross-package
+      # exercise (integration tests driving inner packages) counts toward coverage.
       - name: test (race + coverage)
         run: go test -race -count=1 -timeout 180s -coverpkg=./... -coverprofile=coverage.out ./...
 
@@ -42,9 +50,14 @@ jobs:
           awk -v p="${total%\%}" 'BEGIN { if (p+0 < 90.0) { print "below 90% gate"; exit 1 } }'
 
   docker:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "medusa"]') }}
     steps:
       - uses: actions/checkout@v4
+      # On self-hosted, `docker` talks to the DinD sidecar (DOCKER_HOST is set on
+      # the runner container); wait for the daemon to accept connections.
+      - name: wait for docker daemon (self-hosted DinD)
+        if: runner.environment != 'github-hosted'
+        run: for _ in $(seq 1 30); do docker info >/dev/null 2>&1 && exit 0; sleep 1; done; echo "docker daemon not ready"; exit 1
       # Build the deployable image. Dependencies are vendored, so this is
       # hermetic — no module download or registry credentials needed.
       - name: docker build

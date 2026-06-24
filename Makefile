@@ -1,7 +1,7 @@
 # medusa developer tasks. Requires the buf + protoc-gen-go + protoc-gen-go-vtproto
 # toolchain on PATH (see "go install" lines in README.md).
 
-.PHONY: gen test cover bench fmt vet check e2e
+.PHONY: gen test cover bench fmt vet check e2e runner runner-check
 
 gen: ## regenerate protobuf code from proto/
 	buf lint
@@ -26,5 +26,11 @@ vet: ## static checks
 
 e2e: ## run the Kubernetes end-to-end suite (skips if no cluster)
 	bash k8s/e2e.sh
+
+runner: ## deploy the self-hosted GitHub Actions runner (needs the github-runner Secret)
+	kubectl apply -f k8s/runner.yaml
+
+runner-check: ## verify the self-hosted runner registered (skips without a cluster)
+	bash k8s/runner-check.sh
 
 check: fmt vet test ## format, vet, and test

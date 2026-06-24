@@ -333,7 +333,9 @@ make bench   # benchmarks
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs gofmt, `go vet`,
 `go build`, `go test -race` (the runner has a C compiler), a coverage report, and
-a `docker build` on every push and pull request.
+a `docker build` on every push and pull request. `push` events run on a
+[self-hosted runner in Kubernetes](#self-hosted-ci-runner-on-kubernetes);
+`pull_request` events (including untrusted forks) stay on GitHub-hosted runners.
 
 ## Running on Kubernetes
 
@@ -380,6 +382,42 @@ bash k8s/e2e.sh            # or: go test -tags k8s -run TestK8sE2E -timeout 15m 
 > On Docker Desktop's (kind-based) Kubernetes, a rebuilt image under the same
 > tag is not re-synced into the cluster — bump the tag (`medusa:v2`, …); the
 > e2e script uses a fresh tag each run.
+
+### Self-hosted CI runner on Kubernetes
+
+The CI workflow's `push` jobs run on your own cluster via the runner in
+[`k8s/runner.yaml`](k8s/runner.yaml) — a single ephemeral
+[`myoung34/github-runner`](https://github.com/myoung34/docker-github-actions-runner)
+agent plus a privileged Docker-in-Docker sidecar that powers the `docker build`
+job. The runner reaches the daemon over a unix socket shared through an
+`emptyDir` (no TCP listener at all), so the daemon is reachable from the runner
+container but from nothing outside the pod.
+
+```bash
+# 1. PAT with the `repo` scope (fine-grained: Administration=read+write) as a Secret
+kubectl create secret generic github-runner --from-literal=token=ghp_xxx
+
+# 2. Deploy and verify
+make runner            # kubectl apply -f k8s/runner.yaml
+make runner-check      # asserts rollout + DinD + "Listening for Jobs" (skips w/o cluster)
+
+# repo Settings → Actions → Runners now lists a "medusa-k8s-*" runner as Idle.
+kubectl scale deploy/github-runner --replicas=2   # more concurrent jobs
+```
+
+The workflow targets it with
+`runs-on: [self-hosted, medusa]`, gated by event:
+
+```yaml
+runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "medusa"]') }}
+```
+
+> **Security:** never run untrusted code on a self-hosted runner. The gate above
+> keeps fork `pull_request` builds on GitHub-hosted runners — only `push` (which
+> requires repo write access) reaches the cluster. The runner is **ephemeral**
+> (fresh registration and workspace per job) and the DinD sidecar runs
+> `privileged`, so isolate it (a dedicated namespace/node pool) on a shared
+> cluster.
 
 ## Design decisions & trade-offs
 
