@@ -1063,6 +1063,162 @@ func (x *EvictResponse) GetExisted() bool {
 	return false
 }
 
+// KeyRef identifies one entry by map name and key. ReconcileRequest carries a
+// list of them as an owner's authoritative key set for a partition.
+type KeyRef struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Map           string                 `protobuf:"bytes,1,opt,name=map,proto3" json:"map,omitempty"`
+	Key           []byte                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *KeyRef) Reset() {
+	*x = KeyRef{}
+	mi := &file_medusa_v1_map_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *KeyRef) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*KeyRef) ProtoMessage() {}
+
+func (x *KeyRef) ProtoReflect() protoreflect.Message {
+	mi := &file_medusa_v1_map_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use KeyRef.ProtoReflect.Descriptor instead.
+func (*KeyRef) Descriptor() ([]byte, []int) {
+	return file_medusa_v1_map_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *KeyRef) GetMap() string {
+	if x != nil {
+		return x.Map
+	}
+	return ""
+}
+
+func (x *KeyRef) GetKey() []byte {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+// ReconcileRequest carries the COMPLETE set of keys an owner holds for a
+// partition. The backup deletes any key it holds for that partition that is NOT
+// in the set — healing a delete the backup missed (a "zombie" key that
+// push-only anti-entropy can re-push values for but cannot remove). Sent during
+// anti-entropy only when the owner and backup digests differ, so steady-state
+// traffic is unaffected.
+type ReconcileRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Partition     uint32                 `protobuf:"varint,1,opt,name=partition,proto3" json:"partition,omitempty"`
+	Keys          []*KeyRef              `protobuf:"bytes,2,rep,name=keys,proto3" json:"keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReconcileRequest) Reset() {
+	*x = ReconcileRequest{}
+	mi := &file_medusa_v1_map_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReconcileRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReconcileRequest) ProtoMessage() {}
+
+func (x *ReconcileRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_medusa_v1_map_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReconcileRequest.ProtoReflect.Descriptor instead.
+func (*ReconcileRequest) Descriptor() ([]byte, []int) {
+	return file_medusa_v1_map_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *ReconcileRequest) GetPartition() uint32 {
+	if x != nil {
+		return x.Partition
+	}
+	return 0
+}
+
+func (x *ReconcileRequest) GetKeys() []*KeyRef {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
+type ReconcileResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Pruned        uint64                 `protobuf:"varint,1,opt,name=pruned,proto3" json:"pruned,omitempty"` // entries the backup removed because the owner no longer holds them
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReconcileResponse) Reset() {
+	*x = ReconcileResponse{}
+	mi := &file_medusa_v1_map_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReconcileResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReconcileResponse) ProtoMessage() {}
+
+func (x *ReconcileResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_medusa_v1_map_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReconcileResponse.ProtoReflect.Descriptor instead.
+func (*ReconcileResponse) Descriptor() ([]byte, []int) {
+	return file_medusa_v1_map_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *ReconcileResponse) GetPruned() uint64 {
+	if x != nil {
+		return x.Pruned
+	}
+	return 0
+}
+
 var File_medusa_v1_map_proto protoreflect.FileDescriptor
 
 const file_medusa_v1_map_proto_rawDesc = "" +
@@ -1128,7 +1284,15 @@ const file_medusa_v1_map_proto_rawDesc = "" +
 	"\x03map\x18\x01 \x01(\tR\x03map\x12\x10\n" +
 	"\x03key\x18\x02 \x01(\fR\x03key\")\n" +
 	"\rEvictResponse\x12\x18\n" +
-	"\aexisted\x18\x01 \x01(\bR\aexistedB\x98\x01\n" +
+	"\aexisted\x18\x01 \x01(\bR\aexisted\",\n" +
+	"\x06KeyRef\x12\x10\n" +
+	"\x03map\x18\x01 \x01(\tR\x03map\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\fR\x03key\"W\n" +
+	"\x10ReconcileRequest\x12\x1c\n" +
+	"\tpartition\x18\x01 \x01(\rR\tpartition\x12%\n" +
+	"\x04keys\x18\x02 \x03(\v2\x11.medusa.v1.KeyRefR\x04keys\"+\n" +
+	"\x11ReconcileResponse\x12\x16\n" +
+	"\x06pruned\x18\x01 \x01(\x04R\x06prunedB\x98\x01\n" +
 	"\rcom.medusa.v1B\bMapProtoP\x01Z8github.com/lodgvideon/medusa/genproto/medusa/v1;medusav1\xa2\x02\x03MXX\xaa\x02\tMedusa.V1\xca\x02\tMedusa\\V1\xe2\x02\x15Medusa\\V1\\GPBMetadata\xea\x02\n" +
 	"Medusa::V1b\x06proto3"
 
@@ -1144,7 +1308,7 @@ func file_medusa_v1_map_proto_rawDescGZIP() []byte {
 	return file_medusa_v1_map_proto_rawDescData
 }
 
-var file_medusa_v1_map_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_medusa_v1_map_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
 var file_medusa_v1_map_proto_goTypes = []any{
 	(*PutRequest)(nil),        // 0: medusa.v1.PutRequest
 	(*PutResponse)(nil),       // 1: medusa.v1.PutResponse
@@ -1166,14 +1330,18 @@ var file_medusa_v1_map_proto_goTypes = []any{
 	(*AggregateResponse)(nil), // 17: medusa.v1.AggregateResponse
 	(*EvictRequest)(nil),      // 18: medusa.v1.EvictRequest
 	(*EvictResponse)(nil),     // 19: medusa.v1.EvictResponse
+	(*KeyRef)(nil),            // 20: medusa.v1.KeyRef
+	(*ReconcileRequest)(nil),  // 21: medusa.v1.ReconcileRequest
+	(*ReconcileResponse)(nil), // 22: medusa.v1.ReconcileResponse
 }
 var file_medusa_v1_map_proto_depIdxs = []int32{
-	8, // 0: medusa.v1.Snapshot.entries:type_name -> medusa.v1.SnapshotEntry
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	8,  // 0: medusa.v1.Snapshot.entries:type_name -> medusa.v1.SnapshotEntry
+	20, // 1: medusa.v1.ReconcileRequest.keys:type_name -> medusa.v1.KeyRef
+	2,  // [2:2] is the sub-list for method output_type
+	2,  // [2:2] is the sub-list for method input_type
+	2,  // [2:2] is the sub-list for extension type_name
+	2,  // [2:2] is the sub-list for extension extendee
+	0,  // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_medusa_v1_map_proto_init() }
@@ -1187,7 +1355,7 @@ func file_medusa_v1_map_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_medusa_v1_map_proto_rawDesc), len(file_medusa_v1_map_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   20,
+			NumMessages:   23,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

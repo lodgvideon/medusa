@@ -115,11 +115,11 @@ fi
 # counters stay 0 in the node binary — no listener is registered there — so this
 # verifies the series is wired, not that it fired.
 echo "=== test: anti-entropy + eviction + entry-event metrics ==="
-out=$(incluster 'curl -s medusa-0.medusa:8080/metrics | grep -cE "^medusa_(entries_(reconciled|evicted)|events_(emitted|dropped))_total "')
-if [ "${out:-0}" -ge 4 ] 2>/dev/null; then
-  ok "anti-entropy + eviction + entry-event counters exported"
+out=$(incluster 'curl -s medusa-0.medusa:8080/metrics | grep -cE "^medusa_(entries_(reconciled|pruned|evicted)|events_(emitted|dropped))_total "')
+if [ "${out:-0}" -ge 5 ] 2>/dev/null; then
+  ok "anti-entropy (push + prune) + eviction + entry-event counters exported"
 else
-  bad "expected reconciled/evicted/events_emitted/events_dropped counters -> $out"
+  bad "expected reconciled/pruned/evicted/events_emitted/events_dropped counters -> $out"
 fi
 
 # ---- test: TTL expiry ----

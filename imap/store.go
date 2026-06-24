@@ -271,6 +271,35 @@ func (s *store) dropMigrated(p int, entries []entry) []entry {
 	return dropped
 }
 
+// pruneToKeyset removes every key in partition p that is NOT present in keep —
+// the owner's authoritative key set for that partition (keyed map name -> key).
+// It is the delete-side of anti-entropy: push re-sends values for keys a backup
+// is missing or stale on, but only a prune can drop a key the backup KEPT after
+// missing the owner's delete (a "zombie"). The dropped entries are returned so
+// the caller can record the deletions durably (the WAL), and empty map buckets
+// are reclaimed. Runs under the shard lock, so a concurrent replicated write
+// either lands before it (and, if its key is in keep, survives) or after it.
+func (s *store) pruneToKeyset(p int, keep map[string]map[string]struct{}) []entry {
+	sh := &s.shards[p]
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	var dropped []entry
+	for name, inner := range sh.m {
+		keepKeys := keep[name]
+		for k, v := range inner {
+			if _, ok := keepKeys[k]; ok {
+				continue // still owned — keep it
+			}
+			dropped = append(dropped, entry{mapName: name, key: k, value: v.data, expireAt: v.expireAt})
+			delete(inner, k)
+		}
+		if len(inner) == 0 {
+			delete(sh.m, name)
+		}
+	}
+	return dropped
+}
+
 // sweepExpired removes expired entries across all shards, returning the count
 // reclaimed. It runs periodically so memory is freed even for keys never read.
 func (s *store) sweepExpired() int {

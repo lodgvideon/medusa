@@ -14,6 +14,7 @@ import (
 	"github.com/lodgvideon/medusa/cluster"
 	"github.com/lodgvideon/medusa/codec"
 	medusav1 "github.com/lodgvideon/medusa/genproto/medusa/v1"
+	"github.com/lodgvideon/medusa/metrics"
 	"github.com/lodgvideon/medusa/partition"
 	"github.com/lodgvideon/medusa/transport"
 )
@@ -110,6 +111,31 @@ func (s *Service) dropMigratedLogged(p int, entries []entry) {
 			break
 		}
 	}
+}
+
+// pruneToKeysetLogged drops the keys in partition p that the owner no longer
+// holds (everything not in keep) and records each deletion in the WAL as one
+// atomic unit, mirroring dropMigratedLogged: the WAL lock is held across BOTH
+// the store prune and its WAL records, so the store-apply order equals the WAL
+// order and a crash mid-prune cannot leave a key gone from the store but absent
+// from the WAL (which replay of the pre-prune snapshot would resurrect). Like a
+// backup write, it fires NO entry listener and does NOT delete-through to a
+// MapStore: the owner already did both when it processed the original Remove;
+// this is internal convergence, not a new user-visible deletion. It returns the
+// number of keys pruned.
+func (s *Service) pruneToKeysetLogged(p int, keep map[string]map[string]struct{}) int {
+	if s.wal == nil {
+		return len(s.store.pruneToKeyset(p, keep))
+	}
+	s.wal.mu.Lock()
+	defer s.wal.mu.Unlock()
+	dropped := s.store.pruneToKeyset(p, keep)
+	for _, e := range dropped {
+		if err := s.wal.appendRemoveLocked(e.mapName, []byte(e.key)); err != nil {
+			break // WAL append failed; the next checkpoint is the durability backstop
+		}
+	}
+	return len(dropped)
 }
 
 // applyPut writes locally as the partition owner and, unless this is itself a
@@ -404,6 +430,39 @@ func (s *Service) sendDigest(ctx context.Context, addr string, p int, digest uin
 	return dr.Match, nil
 }
 
+// sendReconcile sends a backup the owner's authoritative key set for partition p
+// and returns how many zombie keys the backup pruned (keys it held that the
+// owner no longer does). Any transport error is returned; the caller treats it
+// as best-effort (the next anti-entropy tick retries), so a prune never blocks
+// the maintenance loop.
+func (s *Service) sendReconcile(ctx context.Context, addr string, p int, keys []*medusav1.KeyRef) (uint64, error) {
+	reqBuf := codec.GetBuf()
+	dstBuf := codec.GetBuf()
+	defer codec.PutBuf(reqBuf)
+	defer codec.PutBuf(dstBuf)
+
+	req := medusav1.ReconcileRequest{Partition: uint32(p), Keys: keys}
+	rb, err := codec.Marshal((*reqBuf)[:0], &req)
+	if err != nil {
+		return 0, err
+	}
+	*reqBuf = rb
+
+	respType, resp, err := s.tr.Send(ctx, addr, medusav1.MessageType_MESSAGE_TYPE_RECONCILE_REQUEST, rb, (*dstBuf)[:0])
+	*dstBuf = resp
+	if err != nil {
+		return 0, err
+	}
+	if respType != medusav1.MessageType_MESSAGE_TYPE_RECONCILE_RESPONSE {
+		return 0, fmt.Errorf("imap: unexpected reconcile response type %v", respType)
+	}
+	var rr medusav1.ReconcileResponse
+	if err := rr.UnmarshalVT(resp); err != nil {
+		return 0, err
+	}
+	return rr.Pruned, nil
+}
+
 // applyExecute runs a named processor against key atomically on this (owner)
 // node and replicates the resulting state to the backup. It returns the
 // processor's result.
@@ -586,21 +645,30 @@ func (s *Service) Migrate(ctx context.Context, table *partition.Table) bool {
 // partitions over successive maintenance ticks at a bounded per-tick cost.
 //
 // It is a slow background safety net beneath the synchronous-replication fast
-// path: idempotent (redundant pushes carry the same value), and push-only — it
-// heals a backup that is MISSING or STALE for a key, but does not remove a key a
-// backup kept after missing a delete (digest-based full reconciliation that also
-// reconciles tombstones is the roadmap). Only owned partitions are pushed, so the
-// owner stays the single source of truth.
+// path and is idempotent (redundant pushes carry the same value). It heals both
+// divergence directions:
+//   - PUSH heals a backup that is MISSING or STALE for a key (re-sends the value);
+//   - PRUNE heals a backup that KEPT a key after missing the owner's delete (a
+//     "zombie") — the owner sends its authoritative key set for the partition and
+//     the backup drops any key not in it. Without prune a missed delete lingered
+//     until restart or migration and could resurrect on failover.
+//
+// Only owned partitions are reconciled, so the owner stays the single source of
+// truth: its current content fully defines what a backup must hold (medusa is
+// single-owner, so there are no conflicting cross-node writes to merge — making
+// owner-authoritative keyset reconciliation simpler and stronger than per-entry
+// versioning would be here).
 //
 // Each partition is digest-gated: the owner sends each backup its content digest
-// and only pushes the data to backups whose digest differs (or that fail the
-// probe). In steady state, when replicas already match, a pass costs one tiny
-// digest RPC per backup and transfers nothing.
+// and only pushes the data and prunes for backups whose digest differs (or that
+// fail the probe). In steady state, when replicas already match, a pass costs one
+// tiny digest RPC per backup and transfers nothing.
 //
 // Each entry is re-read from the owner's store (lookup) immediately before it is
 // pushed, and skipped if the owner no longer holds it — so a key deleted since
-// the snapshot is not resurrected on a backup. This leaves only the same narrow
-// re-read→send race Migrate has, instead of the whole snapshot→push window.
+// the snapshot is neither resurrected on a backup nor kept in the key set the
+// prune is judged against. This leaves only the same narrow re-read→send race
+// Migrate has, healed on the next tick, instead of the whole snapshot→push window.
 func (s *Service) SyncBackups(ctx context.Context, table *partition.Table, start, batch int) (pushed, next int) {
 	now := nowNano()
 	p := ((start % partition.Count) + partition.Count) % partition.Count
@@ -624,11 +692,18 @@ func (s *Service) SyncBackups(ctx context.Context, table *partition.Table, start
 				}
 			}
 			if len(stale) > 0 {
-				for _, e := range s.store.snapshotPartition(p) {
+				// Build the owner's authoritative key set for the partition while
+				// pushing values: a key still live at push time joins the set; a key
+				// deleted/expired since the snapshot is excluded from BOTH the push and
+				// the set, so the backup neither resurrects nor keeps it.
+				snap := s.store.snapshotPartition(p)
+				keyset := make([]*medusav1.KeyRef, 0, len(snap))
+				for _, e := range snap {
+					key := []byte(e.key)
 					// Re-read the owner's CURRENT state: a key deleted or changed
 					// since the snapshot must not be resurrected/clobbered on a
 					// backup. Push the fresh value so backups converge to the owner.
-					data, expireAt, ok := s.store.lookup(p, e.mapName, []byte(e.key))
+					data, expireAt, ok := s.store.lookup(p, e.mapName, key)
 					if !ok {
 						continue // deleted/expired since the snapshot — don't resurrect
 					}
@@ -636,14 +711,23 @@ func (s *Service) SyncBackups(ctx context.Context, table *partition.Table, start
 					if expireAt != 0 && ttlMs <= 0 {
 						continue // expired in flight; let it lapse
 					}
+					keyset = append(keyset, &medusav1.KeyRef{Map: e.mapName, Key: key})
 					sent := false
 					for _, addr := range stale {
-						if err := s.sendPut(ctx, addr, e.mapName, []byte(e.key), data, ttlMs, true); err == nil {
+						if err := s.sendPut(ctx, addr, e.mapName, key, data, ttlMs, true); err == nil {
 							sent = true
 						}
 					}
 					if sent {
 						pushed++ // count the entry once, not once per backup
+					}
+				}
+				// Prune the delete-side: tell each stale backup to drop any key in
+				// this partition the owner no longer holds. Best-effort — a failed
+				// reconcile is retried on the next tick.
+				for _, addr := range stale {
+					if n, err := s.sendReconcile(ctx, addr, p, keyset); err == nil && n > 0 {
+						metrics.Pruned.Add(int64(n))
 					}
 				}
 			}
@@ -1055,6 +1139,36 @@ func (s *Service) Handle(reqType medusav1.MessageType, req, respBuf []byte) (med
 		}
 		out, err := codec.Marshal(respBuf, &medusav1.EvictResponse{Existed: existed})
 		return medusav1.MessageType_MESSAGE_TYPE_EVICT_RESPONSE, out, err
+
+	case medusav1.MessageType_MESSAGE_TYPE_RECONCILE_REQUEST:
+		var rr medusav1.ReconcileRequest
+		if err := rr.UnmarshalVT(req); err != nil {
+			return 0, respBuf, err
+		}
+		if rr.Partition >= partition.Count {
+			return 0, respBuf, fmt.Errorf("imap: reconcile request partition %d out of range", rr.Partition)
+		}
+		p := int(rr.Partition)
+		// Owner-gate: only prune as a FOLLOWER. If this node believes it owns the
+		// partition, it is the authority — a prune driven by a peer (e.g. a stale
+		// ex-owner during a membership transition) must never delete the owner's
+		// live data. Ignore it; the true owner reconciles us, not the reverse.
+		if s.mem.Table().OwnerOf(p) == s.self {
+			out, err := codec.Marshal(respBuf, &medusav1.ReconcileResponse{Pruned: 0})
+			return medusav1.MessageType_MESSAGE_TYPE_RECONCILE_RESPONSE, out, err
+		}
+		keep := make(map[string]map[string]struct{}, len(rr.Keys))
+		for _, kr := range rr.Keys {
+			inner := keep[kr.Map]
+			if inner == nil {
+				inner = make(map[string]struct{})
+				keep[kr.Map] = inner
+			}
+			inner[string(kr.Key)] = struct{}{}
+		}
+		pruned := s.pruneToKeysetLogged(p, keep)
+		out, err := codec.Marshal(respBuf, &medusav1.ReconcileResponse{Pruned: uint64(pruned)})
+		return medusav1.MessageType_MESSAGE_TYPE_RECONCILE_RESPONSE, out, err
 
 	default:
 		return 0, respBuf, fmt.Errorf("imap: unhandled message type %v", reqType)

@@ -22,6 +22,7 @@ var (
 	Evicted        atomic.Int64 // peers removed by failure detection
 	Migrations     atomic.Int64 // partition-migration passes run
 	Reconciled     atomic.Int64 // entries re-pushed to backups by anti-entropy
+	Pruned         atomic.Int64 // zombie keys dropped from backups by anti-entropy (missed deletes)
 	EvictedEntries atomic.Int64 // entries removed to enforce the max-size cap
 	EventsEmitted  atomic.Int64 // entry events delivered to listeners
 	EventsDropped  atomic.Int64 // entry events dropped because the listener queue was full
@@ -60,6 +61,8 @@ func WriteProm(w io.Writer, g Gauges) {
 	fmt.Fprintf(w, "# TYPE medusa_migrations_total counter\nmedusa_migrations_total %d\n", Migrations.Load())
 	fmt.Fprintf(w, "# HELP medusa_entries_reconciled_total Entries re-pushed to backups by anti-entropy.\n")
 	fmt.Fprintf(w, "# TYPE medusa_entries_reconciled_total counter\nmedusa_entries_reconciled_total %d\n", Reconciled.Load())
+	fmt.Fprintf(w, "# HELP medusa_entries_pruned_total Zombie keys dropped from backups by anti-entropy (missed deletes).\n")
+	fmt.Fprintf(w, "# TYPE medusa_entries_pruned_total counter\nmedusa_entries_pruned_total %d\n", Pruned.Load())
 	fmt.Fprintf(w, "# HELP medusa_entries_evicted_total Entries removed to enforce the max-size cap.\n")
 	fmt.Fprintf(w, "# TYPE medusa_entries_evicted_total counter\nmedusa_entries_evicted_total %d\n", EvictedEntries.Load())
 	fmt.Fprintf(w, "# HELP medusa_events_emitted_total Entry events delivered to listeners.\n")

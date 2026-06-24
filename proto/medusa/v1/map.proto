@@ -124,3 +124,25 @@ message EvictRequest {
 message EvictResponse {
   bool existed = 1; // true if a live entry was present on the owner
 }
+
+// KeyRef identifies one entry by map name and key. ReconcileRequest carries a
+// list of them as an owner's authoritative key set for a partition.
+message KeyRef {
+  string map = 1;
+  bytes key = 2;
+}
+
+// ReconcileRequest carries the COMPLETE set of keys an owner holds for a
+// partition. The backup deletes any key it holds for that partition that is NOT
+// in the set — healing a delete the backup missed (a "zombie" key that
+// push-only anti-entropy can re-push values for but cannot remove). Sent during
+// anti-entropy only when the owner and backup digests differ, so steady-state
+// traffic is unaffected.
+message ReconcileRequest {
+  uint32 partition = 1;
+  repeated KeyRef keys = 2;
+}
+
+message ReconcileResponse {
+  uint64 pruned = 1; // entries the backup removed because the owner no longer holds them
+}
