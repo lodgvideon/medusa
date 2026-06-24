@@ -63,6 +63,14 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   the cached copy cluster-wide *without* delete-through, so the next `Get` reloads
   — to refresh or shed memory (`POST /v1/maps/{map}/{key}/evict`). The loader is
   the injection seam (SOLID dependency inversion); register it on every node.
+- **Distributed FIFO queue** — `node.Queue(name)` with `Offer`/`Poll`/`Peek`/
+  `Size` (also `POST /v1/queues/{q}/offer`, `.../poll`, `GET .../peek`,
+  `GET /v1/queues/{q}`). The queue lives on one owner (of its name's partition),
+  so order is global FIFO. It is built on the map — the whole queue is one value
+  mutated by atomic offer/poll EntryProcessors — so it inherits backup
+  replication, failover, WAL durability, snapshots, and migration for free.
+  Trade-off: each op is O(n) over the packed value, total queue size bounded by
+  the per-value transport limit (~64 MiB); a per-item form is a future refinement.
 - **Atomic coordination primitives** — built on the same atomic owner-side
   read-modify-write: `Map.PutIfAbsent(key, value)` stores only if the key is
   absent (returns whether it won — a distributed-lock / leader-election building

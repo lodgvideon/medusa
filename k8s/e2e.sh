@@ -215,6 +215,21 @@ else
   bad "evict -> Get returned $out (want 404)"
 fi
 
+# ---- test: distributed FIFO queue ----
+# Offer three items via one pod; polling from two other pods must return them in
+# FIFO order — the queue lives on a single owner, so ordering is global.
+echo "=== test: distributed queue (FIFO across pods) ==="
+out=$(incluster '
+  for v in alpha beta gamma; do curl -s -o /dev/null -X POST --data-binary "$v" "medusa-0.medusa:8080/v1/queues/jobs/offer"; done
+  a=$(curl -s -X POST medusa-1.medusa:8080/v1/queues/jobs/poll)
+  b=$(curl -s -X POST medusa-2.medusa:8080/v1/queues/jobs/poll)
+  echo "$a-$b"')
+if [ "$out" = "alpha-beta" ]; then
+  ok "queue preserved FIFO across pods (poll@medusa-1=alpha, poll@medusa-2=beta)"
+else
+  bad "queue FIFO -> $out (want alpha-beta)"
+fi
+
 # ---- test: fenced lock (acquire / contend) ----
 # Acquiring returns an 8-byte fence token; a contending holder on another pod
 # gets an empty body (lock held). Assert byte counts, which are printable.

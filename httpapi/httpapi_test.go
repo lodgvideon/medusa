@@ -237,6 +237,51 @@ func TestMapEvictEndpoint(t *testing.T) {
 	}
 }
 
+func TestQueueEndpoints(t *testing.T) {
+	srv := newTestServer(t)
+	base := srv.URL + "/v1/queues/jobs"
+
+	for _, v := range []string{"x", "y"} {
+		if r := do(t, http.MethodPost, base+"/offer", v); r.StatusCode != http.StatusOK {
+			t.Fatalf("offer %s = %d", v, r.StatusCode)
+		}
+	}
+	// Size.
+	resp := do(t, http.MethodGet, base, "")
+	n, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(n) != "2" {
+		t.Fatalf("size = %d %q, want 200 \"2\"", resp.StatusCode, n)
+	}
+	// Peek → head "x", not removed.
+	resp = do(t, http.MethodGet, base+"/peek", "")
+	head, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(head) != "x" {
+		t.Fatalf("peek = %d %q, want 200 \"x\"", resp.StatusCode, head)
+	}
+	// Poll → FIFO x then y.
+	for _, want := range []string{"x", "y"} {
+		resp = do(t, http.MethodPost, base+"/poll", "")
+		v, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || string(v) != want {
+			t.Fatalf("poll = %d %q, want 200 %q", resp.StatusCode, v, want)
+		}
+	}
+	// Drained → poll and peek are both 204.
+	resp = do(t, http.MethodPost, base+"/poll", "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("poll on empty queue = %d, want 204", resp.StatusCode)
+	}
+	resp = do(t, http.MethodGet, base+"/peek", "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("peek on empty queue = %d, want 204", resp.StatusCode)
+	}
+}
+
 func TestMapClearEndpoint(t *testing.T) {
 	srv := newTestServer(t)
 	base := srv.URL + "/v1/maps/c"

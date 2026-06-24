@@ -365,6 +365,9 @@ func (s *store) collectOwnedValues(name string, owned func(p int) bool) [][]byte
 // true for. Eviction caps the OWNED count (not the total, which includes backup
 // copies it cannot evict), so the cap is always reachable by evicting owned
 // entries — never an over-eviction chasing a backup footprint it cannot shed.
+// The reserved queue namespace is excluded (it matches sampleOwned, which never
+// evicts queues — they are durable structures, not cache): the cap then counts
+// only the evictable map entries it governs.
 func (s *store) countOwned(owned func(p int) bool) int {
 	now := nowNano()
 	n := 0
@@ -374,7 +377,10 @@ func (s *store) countOwned(owned func(p int) bool) int {
 		}
 		sh := &s.shards[p]
 		sh.mu.RLock()
-		for _, inner := range sh.m {
+		for name, inner := range sh.m {
+			if name == queueMap {
+				continue
+			}
 			for _, v := range inner {
 				if !v.expired(now) {
 					n++
@@ -390,7 +396,10 @@ func (s *store) countOwned(owned func(p int) bool) int {
 // true for, for max-size eviction. Map iteration order is unspecified, so the
 // selection is effectively random — no per-access bookkeeping, so the read hot
 // path stays allocation-free. Only owned partitions are sampled: evicting a backup
-// copy would be futile (anti-entropy re-pushes it from the owner).
+// copy would be futile (anti-entropy re-pushes it from the owner). The reserved
+// queue namespace is skipped: a queue is one packed value, and evicting it would
+// delete the whole queue (all items) cluster-wide — queues are durable structures,
+// drained by Poll, not evictable cache.
 func (s *store) sampleOwned(owned func(p int) bool, limit int) []entry {
 	if limit <= 0 {
 		return nil
@@ -404,6 +413,9 @@ func (s *store) sampleOwned(owned func(p int) bool, limit int) []entry {
 		sh := &s.shards[p]
 		sh.mu.RLock()
 		for name, inner := range sh.m {
+			if name == queueMap {
+				continue // never evict a queue (deleting the packed value drops all its items)
+			}
 			for k, v := range inner {
 				if v.expired(now) {
 					continue

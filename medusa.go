@@ -427,6 +427,11 @@ func (n *Node) Join(ctx context.Context, seeds []string) error {
 // Map returns a handle to the named distributed map.
 func (n *Node) Map(name string) *imap.Map { return n.maps.Map(name) }
 
+// Queue returns a handle to the named distributed FIFO queue. The queue is owned
+// by one node (the owner of its name's partition), replicated to backups, and
+// durable via the WAL — it inherits the map's machinery. See imap.Queue.
+func (n *Node) Queue(name string) *imap.Queue { return n.maps.Queue(name) }
+
 // AddEntryListener registers a handler invoked asynchronously for entry events
 // (create/update/remove) on mutations this node owns — the injection seam for
 // integrating with external systems. Events are local and best-effort; for a

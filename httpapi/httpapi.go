@@ -59,6 +59,10 @@ func WithToken(token string) Option {
 //	                                 returns whether it existed on the owner
 //	DELETE /v1/maps/{map}            clear the whole map cluster-wide (502 if a
 //	                                 member is unreachable — clear is then partial)
+//	POST   /v1/queues/{queue}/offer  enqueue the request body; returns the new size
+//	POST   /v1/queues/{queue}/poll   dequeue the head (204 if empty)
+//	GET    /v1/queues/{queue}/peek   read the head without removing (204 if empty)
+//	GET    /v1/queues/{queue}        queue size
 //
 // Pass WithToken to require bearer-token auth on every route but the probes.
 func New(node *medusa.Node, opts ...Option) http.Handler {
@@ -233,6 +237,60 @@ func New(node *medusa.Node, opts ...Option) http.Handler {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// Distributed queue: POST .../offer (body=item) appends and returns the new
+	// size; POST .../poll dequeues the head (204 if empty); GET .../peek reads the
+	// head (204 if empty); GET /v1/queues/{queue} returns the size.
+	mux.HandleFunc("POST /v1/queues/{queue}/offer", func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+		if err != nil {
+			writeText(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		n, err := node.Queue(r.PathValue("queue")).Offer(r.Context(), body)
+		if err != nil {
+			writeText(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeText(w, http.StatusOK, strconv.FormatInt(n, 10))
+	})
+
+	mux.HandleFunc("POST /v1/queues/{queue}/poll", func(w http.ResponseWriter, r *http.Request) {
+		v, ok, err := node.Queue(r.PathValue("queue")).Poll(r.Context())
+		if err != nil {
+			writeText(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		if !ok {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(v)
+	})
+
+	mux.HandleFunc("GET /v1/queues/{queue}/peek", func(w http.ResponseWriter, r *http.Request) {
+		v, ok, err := node.Queue(r.PathValue("queue")).Peek(r.Context())
+		if err != nil {
+			writeText(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		if !ok {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(v)
+	})
+
+	mux.HandleFunc("GET /v1/queues/{queue}", func(w http.ResponseWriter, r *http.Request) {
+		n, err := node.Queue(r.PathValue("queue")).Size(r.Context())
+		if err != nil {
+			writeText(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeText(w, http.StatusOK, strconv.FormatInt(n, 10))
 	})
 
 	if cfg.token == "" {
