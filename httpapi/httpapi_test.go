@@ -282,6 +282,28 @@ func TestQueueEndpoints(t *testing.T) {
 	}
 }
 
+// TestReservedMapHTTPBlocked guards that the reserved queue namespace cannot be
+// reached (read, corrupted, or wiped) through the ordinary map HTTP API.
+func TestReservedMapHTTPBlocked(t *testing.T) {
+	srv := newTestServer(t)
+	cases := []struct{ method, path string }{
+		{http.MethodGet, "/v1/maps/__queue"},
+		{http.MethodGet, "/v1/maps/__queue/k"},
+		{http.MethodPut, "/v1/maps/__queue/k"},
+		{http.MethodDelete, "/v1/maps/__queue"},
+		{http.MethodDelete, "/v1/maps/__queue/k"},
+		{http.MethodPost, "/v1/maps/__queue/k/evict"},
+		{http.MethodPost, "/v1/maps/__queue/k/execute?proc=delete"},
+	}
+	for _, tc := range cases {
+		resp := do(t, tc.method, srv.URL+tc.path, "x")
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s %s = %d, want 404 (reserved namespace must be unreachable)", tc.method, tc.path, resp.StatusCode)
+		}
+	}
+}
+
 func TestMapClearEndpoint(t *testing.T) {
 	srv := newTestServer(t)
 	base := srv.URL + "/v1/maps/c"

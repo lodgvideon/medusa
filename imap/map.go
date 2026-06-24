@@ -15,6 +15,10 @@ import (
 // sentinel, so it can never identify an owner.
 var errEmptyHolder = errors.New("imap: lock holder must be non-empty")
 
+// errReservedMap rejects an ordinary mutation of a reserved namespace (the queue
+// backing store) so a client cannot wipe or corrupt the queues that live there.
+var errReservedMap = errors.New("imap: map name is reserved for internal use")
+
 // Map is a handle to a named distributed map. Operations route to the partition
 // owner; if the owner is unreachable they fall back to the backups in replica
 // order, so reads and writes survive up to `Backups` simultaneous holder
@@ -80,6 +84,9 @@ func (mp *Map) PutTTL(ctx context.Context, key, value []byte, ttl time.Duration)
 }
 
 func (mp *Map) putWithTTL(ctx context.Context, key, value []byte, ttlMs int64) error {
+	if mp.name == queueMap {
+		return errReservedMap // don't let the map API overwrite a queue's packed value
+	}
 	metrics.PutOps.Add(1)
 	p, owner, ownerLocal := mp.route(key)
 
@@ -329,6 +336,9 @@ func (mp *Map) Size(ctx context.Context) (uint64, error) {
 // and (as with any delete in this AP design) a leftover copy could briefly be
 // read via backup fallback until anti-entropy and a re-clear reconcile it.
 func (mp *Map) Clear(ctx context.Context) error {
+	if mp.name == queueMap {
+		return errReservedMap // don't let the map API wipe every queue at once
+	}
 	var firstErr error
 	for _, m := range mp.svc.mem.Members() {
 		if m.ID == mp.svc.self {
@@ -389,6 +399,9 @@ func (mp *Map) Aggregate(ctx context.Context, aggregator string) ([]byte, error)
 
 // Remove deletes key, returning whether it existed.
 func (mp *Map) Remove(ctx context.Context, key []byte) (bool, error) {
+	if mp.name == queueMap {
+		return false, errReservedMap // don't let the map API delete a queue
+	}
 	metrics.RemoveOps.Add(1)
 	p, owner, ownerLocal := mp.route(key)
 
@@ -433,6 +446,9 @@ func (mp *Map) Remove(ctx context.Context, key []byte) (bool, error) {
 // Get/Remove it does not fall back to a backup: it routes to the owner, the node
 // responsible for the cached copy.
 func (mp *Map) Evict(ctx context.Context, key []byte) (bool, error) {
+	if mp.name == queueMap {
+		return false, errReservedMap
+	}
 	_, owner, ownerLocal := mp.route(key)
 	if ownerLocal {
 		return mp.svc.applyEvict(ctx, mp.name, key)

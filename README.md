@@ -71,6 +71,10 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   replication, failover, WAL durability, snapshots, and migration for free.
   Trade-off: each op is O(n) over the packed value, total queue size bounded by
   the per-value transport limit (~64 MiB); a per-item form is a future refinement.
+  The backing namespace is reserved — the ordinary map API (and its HTTP routes)
+  refuses to read or mutate it, so a client can't corrupt or wipe queues through
+  it. Queue ops are at-least-once under owner failover (a retried poll can drop a
+  second item) — carry an idempotency key where that matters.
 - **Atomic coordination primitives** — built on the same atomic owner-side
   read-modify-write: `Map.PutIfAbsent(key, value)` stores only if the key is
   absent (returns whether it won — a distributed-lock / leader-election building

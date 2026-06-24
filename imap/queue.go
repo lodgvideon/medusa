@@ -21,8 +21,15 @@ import (
 // distributed queue that reuses the map's durability and replication machinery.
 
 // queueMap is the reserved map namespace that holds every queue, keyed by queue
-// name. Avoid using it as an ordinary map name.
+// name. The public Map mutation API rejects it (see IsReservedMap) so a client
+// cannot wipe or corrupt the queues stored there via ordinary Put/Remove/Clear.
 const queueMap = "__queue"
+
+// IsReservedMap reports whether name is a namespace medusa reserves for its own
+// data structures (currently the distributed queue's backing store). Mutating a
+// reserved map through the ordinary Map/HTTP API is rejected; use the dedicated
+// API (e.g. Queue) instead.
+func IsReservedMap(name string) bool { return name == queueMap }
 
 // queueCount returns the number of packed items in b.
 func queueCount(b []byte) int {
@@ -98,6 +105,14 @@ func queueHead(b []byte) (item, rest []byte, ok bool) {
 // Queue is a handle to a named distributed FIFO queue. Obtain one with
 // Service.Queue (or Node.Queue). It is safe for concurrent use; operations route
 // to the queue's owner, so order is global.
+//
+// At-least-once caveat (inherited from Execute on owner failover): if the owner
+// applies an offer/poll and replicates it but its response is lost, the client's
+// retry runs on the promoted backup and applies AGAIN — a duplicated Offer, or a
+// Poll that drops a second item. Like all Execute ops this is at-least-once, but
+// for a queue it can mean a lost or duplicated item, not just a stale answer. Use
+// it where at-least-once delivery is acceptable, or carry an idempotency key in
+// the item; exactly-once would need consensus replication (out of scope, AP model).
 type Queue struct {
 	svc  *Service
 	name string

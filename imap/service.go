@@ -132,10 +132,12 @@ func (s *Service) applyPut(ctx context.Context, name string, key, value []byte, 
 	}
 	if !isBackup {
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_PUT_REQUEST, name, key, value, ttlMs)
-		if created {
-			s.events.emit(EventCreated, name, key, value)
-		} else {
-			s.events.emit(EventUpdated, name, key, value)
+		if name != queueMap { // reserved-namespace mutations are not user-visible events
+			if created {
+				s.events.emit(EventCreated, name, key, value)
+			} else {
+				s.events.emit(EventUpdated, name, key, value)
+			}
 		}
 		if ms := s.loaders.store(name); ms != nil {
 			// Write-through: persist to the backing store synchronously. The value
@@ -203,7 +205,7 @@ func (s *Service) applyRemove(ctx context.Context, name string, key []byte, isBa
 	}
 	if !isBackup {
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_REMOVE_REQUEST, name, key, nil, 0)
-		if existed {
+		if name != queueMap && existed {
 			s.events.emit(EventRemoved, name, key, nil)
 		}
 		if ms := s.loaders.store(name); ms != nil {
@@ -442,14 +444,30 @@ func (s *Service) applyExecute(ctx context.Context, name string, key []byte, pro
 	switch action {
 	case Set:
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_PUT_REQUEST, name, key, newVal, remainingTTLms(expireAt, nowNano()))
-		if existedBefore {
-			s.events.emit(EventUpdated, name, key, newVal)
-		} else {
-			s.events.emit(EventCreated, name, key, newVal)
+		// Suppress listener events for the reserved queue namespace: an offer/poll is
+		// internal infrastructure, not a user-visible map mutation.
+		if name != queueMap {
+			if existedBefore {
+				s.events.emit(EventUpdated, name, key, newVal)
+			} else {
+				s.events.emit(EventCreated, name, key, newVal)
+			}
+		}
+		if ms := s.loaders.store(name); ms != nil { // write-through, like applyPut
+			if err := ms.Store(key, newVal); err != nil {
+				return out, err
+			}
 		}
 	case Delete:
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_REMOVE_REQUEST, name, key, nil, 0)
-		s.events.emit(EventRemoved, name, key, nil)
+		if name != queueMap && existedBefore {
+			s.events.emit(EventRemoved, name, key, nil)
+		}
+		if ms := s.loaders.store(name); ms != nil { // delete-through, like applyRemove
+			if err := ms.Delete(key); err != nil {
+				return out, err
+			}
+		}
 	}
 	return out, nil
 }
@@ -674,7 +692,11 @@ func (s *Service) Evict(ctx context.Context, max, batch int) int {
 	}
 	victims := s.store.sampleOwned(owned, excess)
 	for _, e := range victims {
-		_, _ = s.applyRemove(ctx, e.mapName, []byte(e.key), false)
+		// Evict, not Remove: shed the in-memory copy (and the backups') but do NOT
+		// delete-through to a configured MapStore — max-size eviction frees memory,
+		// it must not destroy the backing-store record (a later Get reloads it). It
+		// also fires no entry-listener event (eviction is not a logical delete).
+		_, _ = s.applyEvict(ctx, e.mapName, []byte(e.key))
 	}
 	return len(victims)
 }

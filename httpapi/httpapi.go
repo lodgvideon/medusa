@@ -112,6 +112,9 @@ func New(node *medusa.Node, opts ...Option) http.Handler {
 	})
 
 	mux.HandleFunc("GET /v1/maps/{map}", func(w http.ResponseWriter, r *http.Request) {
+		if reservedMapBlocked(w, r) {
+			return
+		}
 		m := node.Map(r.PathValue("map"))
 		// ?agg=<name> runs a cluster-wide aggregation instead of a plain count.
 		if agg := r.URL.Query().Get("agg"); agg != "" {
@@ -145,6 +148,9 @@ func New(node *medusa.Node, opts ...Option) http.Handler {
 	})
 
 	mux.HandleFunc("GET /v1/maps/{map}/{key}", func(w http.ResponseWriter, r *http.Request) {
+		if reservedMapBlocked(w, r) {
+			return
+		}
 		v, ok, err := node.Map(r.PathValue("map")).Get(r.Context(), []byte(r.PathValue("key")))
 		if err != nil {
 			writeText(w, http.StatusBadGateway, err.Error())
@@ -159,6 +165,9 @@ func New(node *medusa.Node, opts ...Option) http.Handler {
 	})
 
 	mux.HandleFunc("PUT /v1/maps/{map}/{key}", func(w http.ResponseWriter, r *http.Request) {
+		if reservedMapBlocked(w, r) {
+			return
+		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 		if err != nil {
 			writeText(w, http.StatusBadRequest, err.Error())
@@ -187,6 +196,9 @@ func New(node *medusa.Node, opts ...Option) http.Handler {
 	// Execute a server-side processor: POST /v1/maps/{map}/{key}/execute?proc=incr
 	// with the argument as the request body; the result is the response body.
 	mux.HandleFunc("POST /v1/maps/{map}/{key}/execute", func(w http.ResponseWriter, r *http.Request) {
+		if reservedMapBlocked(w, r) {
+			return
+		}
 		proc := r.URL.Query().Get("proc")
 		if proc == "" {
 			writeText(w, http.StatusBadRequest, "missing ?proc=")
@@ -209,6 +221,9 @@ func New(node *medusa.Node, opts ...Option) http.Handler {
 	// Evict a key: drop the cached copy without delete-through, so the next read
 	// reloads through a configured MapLoader. POST /v1/maps/{map}/{key}/evict
 	mux.HandleFunc("POST /v1/maps/{map}/{key}/evict", func(w http.ResponseWriter, r *http.Request) {
+		if reservedMapBlocked(w, r) {
+			return
+		}
 		existed, err := node.Map(r.PathValue("map")).Evict(r.Context(), []byte(r.PathValue("key")))
 		if err != nil {
 			writeText(w, http.StatusBadGateway, err.Error())
@@ -218,6 +233,9 @@ func New(node *medusa.Node, opts ...Option) http.Handler {
 	})
 
 	mux.HandleFunc("DELETE /v1/maps/{map}", func(w http.ResponseWriter, r *http.Request) {
+		if reservedMapBlocked(w, r) {
+			return
+		}
 		if err := node.Map(r.PathValue("map")).Clear(r.Context()); err != nil {
 			// A member was unreachable, so the map may not be fully cleared.
 			writeText(w, http.StatusBadGateway, err.Error())
@@ -227,6 +245,9 @@ func New(node *medusa.Node, opts ...Option) http.Handler {
 	})
 
 	mux.HandleFunc("DELETE /v1/maps/{map}/{key}", func(w http.ResponseWriter, r *http.Request) {
+		if reservedMapBlocked(w, r) {
+			return
+		}
 		existed, err := node.Map(r.PathValue("map")).Remove(r.Context(), []byte(r.PathValue("key")))
 		if err != nil {
 			writeText(w, http.StatusBadGateway, err.Error())
@@ -330,6 +351,18 @@ type stats struct {
 	Members      int `json:"members"`
 	LocalEntries int `json:"localEntries"`
 	Backups      int `json:"backups"`
+}
+
+// reservedMapBlocked writes 404 and returns true when the {map} path value names
+// a namespace medusa reserves for its own structures (the queue backing store),
+// so the ordinary map API cannot read, corrupt, or wipe them over HTTP. Use the
+// dedicated surface (e.g. /v1/queues) instead.
+func reservedMapBlocked(w http.ResponseWriter, r *http.Request) bool {
+	if imap.IsReservedMap(r.PathValue("map")) {
+		writeText(w, http.StatusNotFound, "not found")
+		return true
+	}
+	return false
 }
 
 func writeText(w http.ResponseWriter, status int, msg string) {

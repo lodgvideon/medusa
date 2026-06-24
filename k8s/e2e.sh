@@ -230,6 +230,20 @@ else
   bad "queue FIFO -> $out (want alpha-beta)"
 fi
 
+# ---- test: reserved queue namespace is protected from the map API ----
+# DELETE /v1/maps/__queue (the queue backing store) must be refused (404), so a
+# client cannot wipe every queue via the ordinary map API; the queue survives.
+echo "=== test: reserved namespace protected ==="
+out=$(incluster '
+  code=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE medusa-0.medusa:8080/v1/maps/__queue)
+  size=$(curl -s medusa-2.medusa:8080/v1/queues/jobs)
+  echo "$code/$size"')
+if [ "$out" = "404/1" ]; then
+  ok "map API refused to touch __queue (404); the queue (1 item) survived"
+else
+  bad "reserved namespace -> $out (want 404/1)"
+fi
+
 # ---- test: fenced lock (acquire / contend) ----
 # Acquiring returns an 8-byte fence token; a contending holder on another pod
 # gets an empty body (lock held). Assert byte counts, which are printable.
