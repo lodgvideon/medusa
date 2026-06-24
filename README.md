@@ -325,11 +325,12 @@ make gen     # regenerate protobuf code (buf lint + generate)
 make test    # run all tests
 make cover   # coverage report (source total excludes generated code)
 make bench   # benchmarks
+make race    # run the suite under the data-race detector (needs cgo + a C compiler)
 ```
 
-> **Race detector:** `go test -race` needs cgo + a C compiler, which is not
-> required to build or test medusa. Install one (e.g. mingw-w64 gcc) to enable
-> `-race`; the concurrency tests still validate behavior without it.
+> **Race detector:** `make race` (or `CGO_ENABLED=1 go test -race ./...`) needs
+> cgo and a C compiler — e.g. mingw-w64 gcc on Windows. The full suite is
+> race-clean; build and the non-race tests don't require a C compiler.
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs gofmt, `go vet`,
 `go build`, `go test -race` (the runner has a C compiler), a coverage report, and

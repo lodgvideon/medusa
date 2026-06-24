@@ -29,4 +29,7 @@ Touchpoints to check before finishing: `README.md`, `k8s/e2e.sh`, `k8s/medusa.ya
 - **Verify in Kubernetes**: new cluster-visible behavior gets an assertion in
   `k8s/e2e.sh` (run with `make e2e`; it skips cleanly without a cluster).
 - Regenerate protobuf with `make gen` after editing `proto/`; commit the result.
-- The race detector needs a C compiler (absent here) — run tests without `-race`.
+- The race detector needs a C compiler (cgo). It is available locally via
+  mingw-w64 gcc at `C:\msys64\mingw64\bin` — prepend it to PATH and run
+  `make race` (or `CGO_ENABLED=1 go test -race ./...`). Use it for any change
+  touching concurrency.
