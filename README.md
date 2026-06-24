@@ -35,6 +35,16 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   has no lost updates under concurrency — no data movement, one round trip.
   Built-ins: `incr`, `append`, `getset`, `delete`; register your own. Also over
   HTTP: `POST /v1/maps/{m}/{k}/execute?proc=incr`.
+- **Entry listeners (injectable event handlers)** — `node.AddEntryListener(fn)`
+  registers a handler invoked for create/update/remove events on mutations this
+  node owns — the integration seam for an audit log, a message bus, a cache
+  invalidator (dependency inversion: the core never knows the concrete sink).
+  Delivery is asynchronous off the write path (a slow handler can't stall or
+  deadlock a mutation) and gated by an atomic flag, so the hot path stays
+  allocation-free until a listener is registered; a full backlog drops events
+  (counted) rather than blocking the writer. Events are local — register on every
+  node for a cluster-wide view. `medusa_events_emitted_total` /
+  `medusa_events_dropped_total` count delivery.
 - **Atomic coordination primitives** — built on the same atomic owner-side
   read-modify-write: `Map.PutIfAbsent(key, value)` stores only if the key is
   absent (returns whether it won — a distributed-lock / leader-election building
@@ -103,8 +113,8 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   counts them.
 - **Observability** — a Prometheus `GET /metrics` endpoint (hand-rolled, no
   dependency) exposes op counts, members, entries, evictions, migrations,
-  anti-entropy re-pushes, and TTL sweeps; structured logs via stdlib `slog`
-  (JSON in the node binary).
+  anti-entropy re-pushes, TTL sweeps, and entry-event delivery; structured logs
+  via stdlib `slog` (JSON in the node binary).
 - **Security** — set `MEDUSA_AUTH_TOKEN` (or `httpapi.WithToken`) to require an
   `Authorization: Bearer <token>` header on every admin/data route (the
   `/healthz` and `/readyz` probes stay open for the kubelet; the token is

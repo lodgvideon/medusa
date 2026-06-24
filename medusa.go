@@ -425,6 +425,12 @@ func (n *Node) Join(ctx context.Context, seeds []string) error {
 // Map returns a handle to the named distributed map.
 func (n *Node) Map(name string) *imap.Map { return n.maps.Map(name) }
 
+// AddEntryListener registers a handler invoked asynchronously for entry events
+// (create/update/remove) on mutations this node owns — the injection seam for
+// integrating with external systems. Events are local and best-effort; for a
+// cluster-wide view register the listener on every node. See imap.EntryListener.
+func (n *Node) AddEntryListener(fn imap.EntryListener) { n.maps.AddEntryListener(fn) }
+
 // LocalEntryCount returns how many map entries this node currently stores. It
 // is a useful signal that data has migrated to a node and a building block for
 // metrics.
@@ -465,6 +471,8 @@ func (n *Node) Close() error {
 			n.maintCancel()
 			<-n.maintDone
 		}
+		// Stop the entry-event dispatcher; any in-flight emit becomes a no-op.
+		n.maps.Close()
 		// Capture writes since the last periodic snapshot. For a whole-cluster
 		// shutdown (where graceful migration has nowhere to go) this is what is
 		// reloaded on restart.

@@ -19,17 +19,28 @@ import (
 // Service hosts this node's share of every distributed map and answers map
 // RPCs from peers. Obtain per-map handles with Map.
 type Service struct {
-	self  string
-	mem   *cluster.Membership
-	tr    transport.Transport
-	store *store
-	wal   *wal // nil when durability logging is disabled (no DataDir)
+	self   string
+	mem    *cluster.Membership
+	tr     transport.Transport
+	store  *store
+	wal    *wal       // nil when durability logging is disabled (no DataDir)
+	events *listeners // injected entry-event handlers; dormant until one is added
 }
 
 // NewService creates a map service bound to a membership and transport.
 func NewService(mem *cluster.Membership, tr transport.Transport) *Service {
-	return &Service{self: mem.Self().ID, mem: mem, tr: tr, store: newStore()}
+	return &Service{self: mem.Self().ID, mem: mem, tr: tr, store: newStore(), events: newListeners()}
 }
+
+// AddEntryListener registers fn to receive entry events for mutations this node
+// owns. The first listener starts the background dispatcher; delivery is
+// asynchronous and best-effort (see EntryListener). It is the injection seam for
+// integrating with external systems.
+func (s *Service) AddEntryListener(fn EntryListener) { s.events.add(fn) }
+
+// Close releases service-level background resources (the entry-event dispatcher).
+// The WAL is closed separately via CloseWAL.
+func (s *Service) Close() { s.events.close() }
 
 // Map returns a handle to the named distributed map.
 func (s *Service) Map(name string) *Map { return &Map{svc: s, name: name} }
@@ -108,6 +119,11 @@ func (s *Service) applyPut(ctx context.Context, name string, key, value []byte, 
 	}
 	if !isBackup {
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_PUT_REQUEST, name, key, value, ttlMs)
+		if created {
+			s.events.emit(EventCreated, name, key, value)
+		} else {
+			s.events.emit(EventUpdated, name, key, value)
+		}
 	}
 	return created, nil
 }
@@ -136,6 +152,9 @@ func (s *Service) applyRemove(ctx context.Context, name string, key []byte, isBa
 	}
 	if !isBackup {
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_REMOVE_REQUEST, name, key, nil, 0)
+		if existed {
+			s.events.emit(EventRemoved, name, key, nil)
+		}
 	}
 	return existed, nil
 }
@@ -284,12 +303,14 @@ func (s *Service) applyExecute(ctx context.Context, name string, key []byte, pro
 	var newVal, out []byte
 	var action Action
 	var expireAt int64
+	var existedBefore bool // whether the key was live before the processor ran (Created vs Updated)
 	// The store update (which runs the processor under the shard lock) and the
 	// resulting WAL record are applied atomically under the WAL lock, so a
 	// concurrent conflicting write cannot interleave their store/WAL orders.
 	if err := s.logged(
 		func() {
 			action, expireAt = s.store.update(p, name, key, func(cur []byte, exists bool) ([]byte, Action) {
+				existedBefore = exists
 				var a Action
 				newVal, a, out = proc(cur, exists, arg)
 				return newVal, a
@@ -310,8 +331,14 @@ func (s *Service) applyExecute(ctx context.Context, name string, key []byte, pro
 	switch action {
 	case Set:
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_PUT_REQUEST, name, key, newVal, remainingTTLms(expireAt, nowNano()))
+		if existedBefore {
+			s.events.emit(EventUpdated, name, key, newVal)
+		} else {
+			s.events.emit(EventCreated, name, key, newVal)
+		}
 	case Delete:
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_REMOVE_REQUEST, name, key, nil, 0)
+		s.events.emit(EventRemoved, name, key, nil)
 	}
 	return out, nil
 }

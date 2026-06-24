@@ -108,16 +108,18 @@ else
   bad "metrics endpoint -> $out"
 fi
 
-# ---- test: anti-entropy metric present ----
-# Active anti-entropy is cluster-visible behavior; assert its counter is exported
-# (named explicitly so dropping it from WriteProm fails the suite, not just a
-# generic series count).
-echo "=== test: anti-entropy + eviction metrics ==="
-out=$(incluster 'curl -s medusa-0.medusa:8080/metrics | grep -cE "^medusa_entries_(reconciled|evicted)_total "')
-if [ "${out:-0}" -ge 2 ] 2>/dev/null; then
-  ok "anti-entropy + max-size-eviction counters exported"
+# ---- test: feature metrics present ----
+# Anti-entropy, max-size eviction, and entry-event delivery are cluster-visible
+# behaviors; assert their counters are exported (named explicitly so dropping one
+# from WriteProm fails the suite, not just a generic series count). Entry-event
+# counters stay 0 in the node binary — no listener is registered there — so this
+# verifies the series is wired, not that it fired.
+echo "=== test: anti-entropy + eviction + entry-event metrics ==="
+out=$(incluster 'curl -s medusa-0.medusa:8080/metrics | grep -cE "^medusa_(entries_(reconciled|evicted)|events_(emitted|dropped))_total "')
+if [ "${out:-0}" -ge 4 ] 2>/dev/null; then
+  ok "anti-entropy + eviction + entry-event counters exported"
 else
-  bad "expected both entries_reconciled/evicted counters -> $out"
+  bad "expected reconciled/evicted/events_emitted/events_dropped counters -> $out"
 fi
 
 # ---- test: TTL expiry ----
