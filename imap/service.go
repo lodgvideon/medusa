@@ -21,18 +21,29 @@ import (
 // Service hosts this node's share of every distributed map and answers map
 // RPCs from peers. Obtain per-map handles with Map.
 type Service struct {
-	self   string
-	mem    *cluster.Membership
-	tr     transport.Transport
-	store  *store
-	wal    *wal       // nil when durability logging is disabled (no DataDir)
-	events *listeners // injected entry-event handlers; dormant until one is added
+	self    string
+	mem     *cluster.Membership
+	tr      transport.Transport
+	store   *store
+	wal     *wal            // nil when durability logging is disabled (no DataDir)
+	events  *listeners      // injected entry-event handlers; dormant until one is added
+	loaders *loaderRegistry // per-map MapLoader/MapStore for read/write-through
 }
 
 // NewService creates a map service bound to a membership and transport.
 func NewService(mem *cluster.Membership, tr transport.Transport) *Service {
-	return &Service{self: mem.Self().ID, mem: mem, tr: tr, store: newStore(), events: newListeners()}
+	return &Service{self: mem.Self().ID, mem: mem, tr: tr, store: newStore(), events: newListeners(), loaders: newLoaderRegistry()}
 }
+
+// SetMapLoader configures a read-through loader for the named map: a Get that
+// misses loads the entry from it and caches it. SetMapStore additionally enables
+// write-through (Put) and delete-through (Remove). Register the same loader on
+// every node — read/write-through runs on whichever node owns the key. Configure
+// at startup, before serving traffic. See MapLoader/MapStore.
+func (s *Service) SetMapLoader(name string, l MapLoader) { s.loaders.set(name, l) }
+
+// SetMapStore configures a read/write-through backing store for the named map.
+func (s *Service) SetMapStore(name string, ms MapStore) { s.loaders.set(name, ms) }
 
 // AddEntryListener registers fn to receive entry events for mutations this node
 // owns. The first listener starts the background dispatcher; delivery is
@@ -126,8 +137,46 @@ func (s *Service) applyPut(ctx context.Context, name string, key, value []byte, 
 		} else {
 			s.events.emit(EventUpdated, name, key, value)
 		}
+		if ms := s.loaders.store(name); ms != nil {
+			// Write-through: persist to the backing store synchronously. The value
+			// is already in memory + WAL and replicated, so a store failure is
+			// surfaced for the caller to retry while the grid stays internally
+			// consistent (the in-memory write is kept regardless of the external one).
+			if err := ms.Store(key, value); err != nil {
+				return created, err
+			}
+		}
 	}
 	return created, nil
+}
+
+// getThrough reads key locally with read-through: on a miss, if a loader is
+// configured for the map, it loads the entry from the external source, caches it
+// (cacheLoaded never clobbers a write that raced the load), and returns it. It
+// runs on the partition OWNER — where a key is cached — so a loaded value is not
+// replicated (the external store is the source of truth, and replicating would
+// re-trigger write-through). A loader error is surfaced.
+func (s *Service) getThrough(name string, key []byte) ([]byte, bool, error) {
+	p := partition.For(key)
+	if v, ok := s.store.get(p, name, key); ok {
+		return v, true, nil
+	}
+	loader := s.loaders.loader(name)
+	if loader == nil {
+		return nil, false, nil
+	}
+	// Read-through only on the partition OWNER. The GET handler is also reached via
+	// Map.Get's backup-fallback (a query routed to a backup when the owner is
+	// unreachable); a non-owner must NOT load — it would cache an orphaned copy the
+	// owner never learns about and anti-entropy (owner→backup) never heals.
+	if s.mem.Table().OwnerOf(p) != s.self {
+		return nil, false, nil
+	}
+	v, found, err := loader.Load(key)
+	if err != nil || !found {
+		return nil, found, err
+	}
+	return s.store.cacheLoaded(p, name, key, v), true, nil
 }
 
 // expireFromTTL turns a relative TTL in milliseconds into an absolute expiry
@@ -157,7 +206,38 @@ func (s *Service) applyRemove(ctx context.Context, name string, key []byte, isBa
 		if existed {
 			s.events.emit(EventRemoved, name, key, nil)
 		}
+		if ms := s.loaders.store(name); ms != nil {
+			// Delete-through fires even when the grid held no cached entry (existed
+			// may be false): a key can be evicted from the cache yet still live in
+			// the backing store, and Remove must delete it there too — gating on
+			// existed would make an evicted-but-persisted key undeletable. Delete is
+			// contractually idempotent, so an absent-key delete is a harmless no-op.
+			if err := ms.Delete(key); err != nil {
+				return existed, err
+			}
+		}
 	}
+	return existed, nil
+}
+
+// applyEvict drops key from the in-memory store and replicates the drop to the
+// backups, but — unlike applyRemove — does NOT delete through to a MapStore and
+// does NOT fire an entry event: it sheds the cached copy so the next read reloads
+// through the MapLoader. The store mutation and its WAL record are one unit
+// (logged), like every owner write. It is owner-only (Map.Evict routes here).
+func (s *Service) applyEvict(ctx context.Context, name string, key []byte) (bool, error) {
+	p := partition.For(key)
+	var existed bool
+	if err := s.logged(
+		func() { existed = s.store.remove(p, name, key) },
+		func() error {
+			return s.wal.appendLocked(walOpRemove, &medusav1.SnapshotEntry{Map: name, Key: key})
+		},
+	); err != nil {
+		return existed, err
+	}
+	// Drop the backups' copies too (a plain backup remove — no delete-through there).
+	s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_REMOVE_REQUEST, name, key, nil, 0)
 	return existed, nil
 }
 
@@ -260,6 +340,35 @@ func (s *Service) sendRemove(ctx context.Context, addr, name string, key []byte,
 		return false, err
 	}
 	return rr.Existed, nil
+}
+
+// sendEvict asks the owner to evict key (drop the cached copy without deleting it
+// from any backing store).
+func (s *Service) sendEvict(ctx context.Context, addr, name string, key []byte) (bool, error) {
+	reqBuf := codec.GetBuf()
+	dstBuf := codec.GetBuf()
+	defer codec.PutBuf(reqBuf)
+	defer codec.PutBuf(dstBuf)
+
+	rb, err := codec.Marshal((*reqBuf)[:0], &medusav1.EvictRequest{Map: name, Key: key})
+	if err != nil {
+		return false, err
+	}
+	*reqBuf = rb
+
+	respType, resp, err := s.tr.Send(ctx, addr, medusav1.MessageType_MESSAGE_TYPE_EVICT_REQUEST, rb, (*dstBuf)[:0])
+	*dstBuf = resp
+	if err != nil {
+		return false, err
+	}
+	if respType != medusav1.MessageType_MESSAGE_TYPE_EVICT_RESPONSE {
+		return false, fmt.Errorf("imap: unexpected evict response type %v", respType)
+	}
+	var er medusav1.EvictResponse
+	if err := er.UnmarshalVT(resp); err != nil {
+		return false, err
+	}
+	return er.Existed, nil
 }
 
 // sendDigest asks a backup whether its content digest for partition p matches
@@ -836,7 +945,10 @@ func (s *Service) Handle(reqType medusav1.MessageType, req, respBuf []byte) (med
 		if err := gr.UnmarshalVT(req); err != nil {
 			return 0, respBuf, err
 		}
-		v, ok := s.store.get(partition.For(gr.Key), gr.Map, gr.Key)
+		v, ok, lerr := s.getThrough(gr.Map, gr.Key) // read-through on a miss
+		if lerr != nil {
+			return 0, respBuf, lerr
+		}
 		out, err := codec.Marshal(respBuf, &medusav1.GetResponse{Found: ok, Value: v})
 		return medusav1.MessageType_MESSAGE_TYPE_GET_RESPONSE, out, err
 
@@ -909,6 +1021,18 @@ func (s *Service) Handle(reqType medusav1.MessageType, req, respBuf []byte) (med
 		}
 		out, err := codec.Marshal(respBuf, &medusav1.AggregateResponse{Partial: partial})
 		return medusav1.MessageType_MESSAGE_TYPE_AGGREGATE_RESPONSE, out, err
+
+	case medusav1.MessageType_MESSAGE_TYPE_EVICT_REQUEST:
+		var er medusav1.EvictRequest
+		if err := er.UnmarshalVT(req); err != nil {
+			return 0, respBuf, err
+		}
+		existed, eerr := s.applyEvict(context.Background(), er.Map, er.Key)
+		if eerr != nil {
+			return 0, respBuf, eerr
+		}
+		out, err := codec.Marshal(respBuf, &medusav1.EvictResponse{Existed: existed})
+		return medusav1.MessageType_MESSAGE_TYPE_EVICT_RESPONSE, out, err
 
 	default:
 		return 0, respBuf, fmt.Errorf("imap: unhandled message type %v", reqType)

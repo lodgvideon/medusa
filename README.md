@@ -54,6 +54,15 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   `Combine`). The member-side reduce runs outside the shard locks. Over HTTP:
   `GET /v1/maps/{map}?agg=sum` (400 for an unknown aggregator, 502 + partial if a
   member is unreachable).
+- **Read/write-through + evict (external store integration)** —
+  `node.SetMapLoader(map, loader)` backs a map with an external source: a `Get`
+  that misses loads the entry through the loader and caches it (read-through), on
+  the key's owner. `node.SetMapStore(map, store)` additionally write-throughs a
+  `Put` and delete-throughs a `Remove` to the backing store, synchronously (a
+  store failure is surfaced; the in-memory write is kept). `Map.Evict(key)` drops
+  the cached copy cluster-wide *without* delete-through, so the next `Get` reloads
+  — to refresh or shed memory (`POST /v1/maps/{map}/{key}/evict`). The loader is
+  the injection seam (SOLID dependency inversion); register it on every node.
 - **Atomic coordination primitives** — built on the same atomic owner-side
   read-modify-write: `Map.PutIfAbsent(key, value)` stores only if the key is
   absent (returns whether it won — a distributed-lock / leader-election building

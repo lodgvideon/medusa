@@ -112,3 +112,15 @@ message AggregateRequest {
 message AggregateResponse {
   bytes partial = 1; // aggregator-encoded partial; empty means the member owns no entries
 }
+
+// EvictRequest drops a key from the in-memory store (owner + backups) WITHOUT
+// deleting it from any configured backing store — so the next read reloads it
+// through the MapLoader. Distinct from RemoveRequest, which also deletes through.
+message EvictRequest {
+  string map = 1;
+  bytes key = 2;
+}
+
+message EvictResponse {
+  bool existed = 1; // true if a live entry was present on the owner
+}

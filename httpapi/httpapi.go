@@ -55,6 +55,8 @@ func WithToken(token string) Option {
 //	GET    /v1/maps/{map}/{key}      fetch a value (404 if absent)
 //	PUT    /v1/maps/{map}/{key}      store the request body as the value
 //	DELETE /v1/maps/{map}/{key}      remove a key (404 if absent)
+//	POST   /v1/maps/{map}/{key}/evict  drop the cached copy (no delete-through);
+//	                                 returns whether it existed on the owner
 //	DELETE /v1/maps/{map}            clear the whole map cluster-wide (502 if a
 //	                                 member is unreachable — clear is then partial)
 //
@@ -198,6 +200,17 @@ func New(node *medusa.Node, opts ...Option) http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/octet-stream")
 		_, _ = w.Write(out)
+	})
+
+	// Evict a key: drop the cached copy without delete-through, so the next read
+	// reloads through a configured MapLoader. POST /v1/maps/{map}/{key}/evict
+	mux.HandleFunc("POST /v1/maps/{map}/{key}/evict", func(w http.ResponseWriter, r *http.Request) {
+		existed, err := node.Map(r.PathValue("map")).Evict(r.Context(), []byte(r.PathValue("key")))
+		if err != nil {
+			writeText(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeText(w, http.StatusOK, strconv.FormatBool(existed))
 	})
 
 	mux.HandleFunc("DELETE /v1/maps/{map}", func(w http.ResponseWriter, r *http.Request) {

@@ -59,3 +59,25 @@ func TestMapAggregateDistributed(t *testing.T) {
 		t.Fatalf("min over empty map = %v, want nil", got)
 	}
 }
+
+// TestMapEvictDistributed exercises Evict routing across the cluster: evicting
+// from every node drives the owner's local path (applyEvict) and the non-owners'
+// remote path (sendEvict). With no loader configured the key is then gone
+// everywhere (owner and backups), confirming the drop replicated.
+func TestMapEvictDistributed(t *testing.T) {
+	f := newFixture()
+	a, b, c := f.cluster3(t)
+	ctx := context.Background()
+
+	if err := a.svc.Map("ev").Put(ctx, []byte("k"), []byte("v")); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	for _, n := range []*node{a, b, c} { // non-owners go through sendEvict; owner local
+		if _, err := n.svc.Map("ev").Evict(ctx, []byte("k")); err != nil {
+			t.Fatalf("evict from %s: %v", n.id, err)
+		}
+	}
+	if v, ok, _ := c.svc.Map("ev").Get(ctx, []byte("k")); ok {
+		t.Fatalf("key still present after cluster-wide evict: %q", v)
+	}
+}

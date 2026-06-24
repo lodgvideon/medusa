@@ -211,6 +211,30 @@ func TestMapAggregateEndpoint(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown aggregator = %d, want 400", resp.StatusCode)
 	}
+
+	// min over an empty map renders as an empty body (no minimum exists).
+	resp = do(t, http.MethodGet, srv.URL+"/v1/maps/nonesuch?agg=min", "")
+	empty, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || len(empty) != 0 {
+		t.Fatalf("min over empty map = %d %q, want 200 empty", resp.StatusCode, empty)
+	}
+}
+
+func TestMapEvictEndpoint(t *testing.T) {
+	srv := newTestServer(t)
+	base := srv.URL + "/v1/maps/ev"
+	if r := do(t, http.MethodPut, base+"/k", "v"); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT = %d", r.StatusCode)
+	}
+	if r := do(t, http.MethodPost, base+"/k/evict", ""); r.StatusCode != http.StatusOK {
+		t.Fatalf("evict = %d, want 200", r.StatusCode)
+	}
+	// No MapLoader is configured on the test node, so the evicted key does not
+	// reload — confirming the entry was dropped from the in-memory store.
+	if r := do(t, http.MethodGet, base+"/k", ""); r.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET after evict = %d, want 404", r.StatusCode)
+	}
 }
 
 func TestMapClearEndpoint(t *testing.T) {

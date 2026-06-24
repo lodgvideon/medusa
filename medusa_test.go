@@ -622,6 +622,66 @@ func TestNodeAggregateRoutes(t *testing.T) {
 	}
 }
 
+// memStore is an in-memory MapStore for the node-level load/evict test.
+type memStore struct {
+	mu   sync.Mutex
+	data map[string][]byte
+}
+
+func (m *memStore) Load(k []byte) ([]byte, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok := m.data[string(k)]
+	return v, ok, nil
+}
+func (m *memStore) Store(k, v []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.data[string(k)] = append([]byte(nil), v...)
+	return nil
+}
+func (m *memStore) Delete(k []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.data, string(k))
+	return nil
+}
+func (m *memStore) has(k string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.data[k]
+	return ok
+}
+
+// TestNodeLoadEvictRoutes exercises read-through and the EVICT message across two
+// nodes: a Get loads + caches a key only in the backing store, and an Evict from
+// the OTHER node crosses the dispatch router to the owner (regression guard that a
+// new wire type is routed to maps.Handle) without delete-through.
+func TestNodeLoadEvictRoutes(t *testing.T) {
+	sw := transport.NewSwitch()
+	ctx := context.Background()
+	a := inmemNode(t, sw, "a", nil)
+	b := inmemNode(t, sw, "b", []string{"a"})
+	awaitMembers(t, 2, a, b)
+
+	backing := &memStore{data: map[string][]byte{"k": []byte("fromdb")}}
+	a.SetMapStore("m", backing)
+	b.SetMapStore("m", backing) // both nodes — read-through runs on the key's owner
+
+	if v, ok, err := a.Map("m").Get(ctx, []byte("k")); err != nil || !ok || string(v) != "fromdb" {
+		t.Fatalf("read-through Get = %q,%v,%v; want fromdb", v, ok, err)
+	}
+	if _, err := b.Map("m").Evict(ctx, []byte("k")); err != nil {
+		t.Fatalf("evict across nodes: %v", err)
+	}
+	if !backing.has("k") {
+		t.Fatal("evict must not delete from the backing store")
+	}
+	if v, ok, err := b.Map("m").Get(ctx, []byte("k")); err != nil || !ok || string(v) != "fromdb" {
+		t.Fatalf("post-evict reload = %q,%v,%v; want fromdb", v, ok, err)
+	}
+}
+
 func TestNewFailsOnBusyAddr(t *testing.T) {
 	addr := freeAddr(t)
 	first, err := medusa.New(medusa.Config{Addr: addr})

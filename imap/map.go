@@ -125,10 +125,10 @@ func (mp *Map) Get(ctx context.Context, key []byte) ([]byte, bool, error) {
 	metrics.GetOps.Add(1)
 	p, owner, ownerLocal := mp.route(key)
 
-	// Try the owner first.
+	// Try the owner first (read-through loads from a configured MapLoader on a miss).
 	if ownerLocal {
-		if v, ok := mp.svc.store.get(p, mp.name, key); ok {
-			return v, ok, nil
+		if v, ok, err := mp.svc.getThrough(mp.name, key); ok || err != nil {
+			return v, ok, err
 		}
 	} else if v, ok, err := mp.svc.sendGet(ctx, owner, mp.name, key); err == nil && ok {
 		return v, ok, nil
@@ -423,4 +423,19 @@ func (mp *Map) Remove(ctx context.Context, key []byte) (bool, error) {
 		return existed, nil
 	}
 	return false, err
+}
+
+// Evict drops key from the in-memory grid (the owner and its backups) WITHOUT
+// deleting it from any configured backing store, so the next Get reloads it
+// through the MapLoader. Use it to refresh a cached entry or shed memory; use
+// Remove to delete the entry everywhere (which also delete-throughs to a
+// MapStore). It returns whether a live entry was present on the owner. Unlike
+// Get/Remove it does not fall back to a backup: it routes to the owner, the node
+// responsible for the cached copy.
+func (mp *Map) Evict(ctx context.Context, key []byte) (bool, error) {
+	_, owner, ownerLocal := mp.route(key)
+	if ownerLocal {
+		return mp.svc.applyEvict(ctx, mp.name, key)
+	}
+	return mp.svc.sendEvict(ctx, owner, mp.name, key)
 }

@@ -964,6 +964,105 @@ func (x *AggregateResponse) GetPartial() []byte {
 	return nil
 }
 
+// EvictRequest drops a key from the in-memory store (owner + backups) WITHOUT
+// deleting it from any configured backing store — so the next read reloads it
+// through the MapLoader. Distinct from RemoveRequest, which also deletes through.
+type EvictRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Map           string                 `protobuf:"bytes,1,opt,name=map,proto3" json:"map,omitempty"`
+	Key           []byte                 `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EvictRequest) Reset() {
+	*x = EvictRequest{}
+	mi := &file_medusa_v1_map_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EvictRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EvictRequest) ProtoMessage() {}
+
+func (x *EvictRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_medusa_v1_map_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EvictRequest.ProtoReflect.Descriptor instead.
+func (*EvictRequest) Descriptor() ([]byte, []int) {
+	return file_medusa_v1_map_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *EvictRequest) GetMap() string {
+	if x != nil {
+		return x.Map
+	}
+	return ""
+}
+
+func (x *EvictRequest) GetKey() []byte {
+	if x != nil {
+		return x.Key
+	}
+	return nil
+}
+
+type EvictResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Existed       bool                   `protobuf:"varint,1,opt,name=existed,proto3" json:"existed,omitempty"` // true if a live entry was present on the owner
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EvictResponse) Reset() {
+	*x = EvictResponse{}
+	mi := &file_medusa_v1_map_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EvictResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EvictResponse) ProtoMessage() {}
+
+func (x *EvictResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_medusa_v1_map_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EvictResponse.ProtoReflect.Descriptor instead.
+func (*EvictResponse) Descriptor() ([]byte, []int) {
+	return file_medusa_v1_map_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *EvictResponse) GetExisted() bool {
+	if x != nil {
+		return x.Existed
+	}
+	return false
+}
+
 var File_medusa_v1_map_proto protoreflect.FileDescriptor
 
 const file_medusa_v1_map_proto_rawDesc = "" +
@@ -1024,7 +1123,12 @@ const file_medusa_v1_map_proto_rawDesc = "" +
 	"aggregator\x18\x02 \x01(\tR\n" +
 	"aggregator\"-\n" +
 	"\x11AggregateResponse\x12\x18\n" +
-	"\apartial\x18\x01 \x01(\fR\apartialB\x98\x01\n" +
+	"\apartial\x18\x01 \x01(\fR\apartial\"2\n" +
+	"\fEvictRequest\x12\x10\n" +
+	"\x03map\x18\x01 \x01(\tR\x03map\x12\x10\n" +
+	"\x03key\x18\x02 \x01(\fR\x03key\")\n" +
+	"\rEvictResponse\x12\x18\n" +
+	"\aexisted\x18\x01 \x01(\bR\aexistedB\x98\x01\n" +
 	"\rcom.medusa.v1B\bMapProtoP\x01Z8github.com/lodgvideon/medusa/genproto/medusa/v1;medusav1\xa2\x02\x03MXX\xaa\x02\tMedusa.V1\xca\x02\tMedusa\\V1\xe2\x02\x15Medusa\\V1\\GPBMetadata\xea\x02\n" +
 	"Medusa::V1b\x06proto3"
 
@@ -1040,7 +1144,7 @@ func file_medusa_v1_map_proto_rawDescGZIP() []byte {
 	return file_medusa_v1_map_proto_rawDescData
 }
 
-var file_medusa_v1_map_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_medusa_v1_map_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_medusa_v1_map_proto_goTypes = []any{
 	(*PutRequest)(nil),        // 0: medusa.v1.PutRequest
 	(*PutResponse)(nil),       // 1: medusa.v1.PutResponse
@@ -1060,6 +1164,8 @@ var file_medusa_v1_map_proto_goTypes = []any{
 	(*ClearResponse)(nil),     // 15: medusa.v1.ClearResponse
 	(*AggregateRequest)(nil),  // 16: medusa.v1.AggregateRequest
 	(*AggregateResponse)(nil), // 17: medusa.v1.AggregateResponse
+	(*EvictRequest)(nil),      // 18: medusa.v1.EvictRequest
+	(*EvictResponse)(nil),     // 19: medusa.v1.EvictResponse
 }
 var file_medusa_v1_map_proto_depIdxs = []int32{
 	8, // 0: medusa.v1.Snapshot.entries:type_name -> medusa.v1.SnapshotEntry
@@ -1081,7 +1187,7 @@ func file_medusa_v1_map_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_medusa_v1_map_proto_rawDesc), len(file_medusa_v1_map_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   18,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

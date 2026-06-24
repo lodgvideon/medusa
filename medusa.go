@@ -411,7 +411,8 @@ func (n *Node) dispatch(reqType medusav1.MessageType, req, respBuf []byte) (medu
 		medusav1.MessageType_MESSAGE_TYPE_DIGEST_REQUEST,
 		medusav1.MessageType_MESSAGE_TYPE_SIZE_REQUEST,
 		medusav1.MessageType_MESSAGE_TYPE_CLEAR_REQUEST,
-		medusav1.MessageType_MESSAGE_TYPE_AGGREGATE_REQUEST:
+		medusav1.MessageType_MESSAGE_TYPE_AGGREGATE_REQUEST,
+		medusav1.MessageType_MESSAGE_TYPE_EVICT_REQUEST:
 		return n.maps.Handle(reqType, req, respBuf)
 	default:
 		return 0, respBuf, fmt.Errorf("medusa: unhandled message type %v", reqType)
@@ -431,6 +432,16 @@ func (n *Node) Map(name string) *imap.Map { return n.maps.Map(name) }
 // integrating with external systems. Events are local and best-effort; for a
 // cluster-wide view register the listener on every node. See imap.EntryListener.
 func (n *Node) AddEntryListener(fn imap.EntryListener) { n.maps.AddEntryListener(fn) }
+
+// SetMapLoader configures read-through loading for a map: a Get that misses loads
+// the entry from the loader and caches it. Register on every node (it runs on the
+// key's owner). See imap.MapLoader.
+func (n *Node) SetMapLoader(name string, l imap.MapLoader) { n.maps.SetMapLoader(name, l) }
+
+// SetMapStore configures a read/write-through backing store for a map: in
+// addition to read-through, a Put write-throughs and a Remove delete-throughs to
+// it (synchronously, on the owner). Register on every node. See imap.MapStore.
+func (n *Node) SetMapStore(name string, ms imap.MapStore) { n.maps.SetMapStore(name, ms) }
 
 // LocalEntryCount returns how many map entries this node currently stores. It
 // is a useful signal that data has migrated to a node and a building block for

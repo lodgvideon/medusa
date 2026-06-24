@@ -200,6 +200,21 @@ else
   bad "Map.Clear -> $out (want 0)"
 fi
 
+# ---- test: evict (drop cached copy, no reload without a loader) ----
+# Put a key, evict it from another pod (routes EVICT to the owner via dispatch),
+# then a Get must 404 — no MapLoader is configured in the node binary, so the
+# evicted entry does not reload. Exercises the EVICT message end-to-end.
+echo "=== test: evict (cache drop) ==="
+out=$(incluster '
+  curl -s -o /dev/null -X PUT --data-binary v medusa-0.medusa:8080/v1/maps/g/evkey
+  curl -s -o /dev/null -X POST medusa-1.medusa:8080/v1/maps/g/evkey/evict
+  curl -s -o /dev/null -w "%{http_code}" medusa-2.medusa:8080/v1/maps/g/evkey')
+if [ "$out" = "404" ]; then
+  ok "evict dropped the key cluster-wide (Get 404 from a third pod)"
+else
+  bad "evict -> Get returned $out (want 404)"
+fi
+
 # ---- test: fenced lock (acquire / contend) ----
 # Acquiring returns an 8-byte fence token; a contending holder on another pod
 # gets an empty body (lock held). Assert byte counts, which are printable.

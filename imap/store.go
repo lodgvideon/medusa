@@ -106,6 +106,30 @@ func (s *store) put(p int, name string, key, data []byte, expireAt int64) bool {
 	return created
 }
 
+// cacheLoaded stores a read-through-loaded value, but only if the key is still
+// absent — so a write that raced the external load is never clobbered by the
+// (now stale) loaded value. It returns the value now live for the key: the loaded
+// value if it was cached, or the racing write's value if one landed first. The
+// cached entry has no expiry (the loader/backing store owns lifetime).
+func (s *store) cacheLoaded(p int, name string, key, data []byte) []byte {
+	sh := &s.shards[p]
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	inner := sh.m[name]
+	if inner == nil {
+		inner = make(map[string]value)
+		sh.m[name] = inner
+	}
+	k := string(key)
+	if v, ok := inner[k]; ok && !v.expired(nowNano()) {
+		return v.data // a write raced the load — keep and return it, don't clobber
+	}
+	d := make([]byte, len(data))
+	copy(d, data)
+	inner[k] = value{data: d}
+	return d
+}
+
 // entry is one key/value pair within a partition, used during migration. It
 // carries the absolute expiry so a migrated entry keeps its lifetime.
 type entry struct {
