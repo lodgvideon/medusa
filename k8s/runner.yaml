@@ -77,8 +77,11 @@ spec:
               valueFrom:
                 secretKeyRef: { name: github-runner, key: token }
           resources:
+            # Go 1.26 derives GOMAXPROCS from the CPU limit; `go test -race` is
+            # CPU- and memory-hungry, so give it room (the limit is a burst
+            # ceiling — requests stay low so the pod schedules easily).
             requests: { cpu: 500m, memory: 512Mi }
-            limits: { cpu: "2", memory: 2Gi }
+            limits: { cpu: "4", memory: 4Gi }
           volumeMounts:
             - { name: docker-sock, mountPath: /run/dind }
         # ---- Docker-in-Docker sidecar (powers the `docker build` job) ----

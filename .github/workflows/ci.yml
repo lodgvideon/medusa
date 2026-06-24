@@ -39,8 +39,11 @@ jobs:
       # GitHub-hosted, installed above on self-hosted), covering ground the dev
       # machine cannot — it has no cgo toolchain. -coverpkg=./... so cross-package
       # exercise (integration tests driving inner packages) counts toward coverage.
+      # Timeout is generous (300s): -race is several times slower, and the
+      # self-hosted pod is CPU-capped, so the integration suite needs more wall
+      # clock than on a GitHub-hosted runner.
       - name: test (race + coverage)
-        run: go test -race -count=1 -timeout 180s -coverpkg=./... -coverprofile=coverage.out ./...
+        run: go test -race -count=1 -timeout 300s -coverpkg=./... -coverprofile=coverage.out ./...
 
       - name: coverage gate (>=90%, excluding generated code + cmd main)
         run: |
