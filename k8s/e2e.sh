@@ -14,6 +14,10 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 IMAGE="medusa:e2e-$(date +%s)"
+# Image for the in-cluster curl helper pod (see incluster). Kept in a var so the
+# kind path can preload it into the node — kind nodes pull from Docker Hub on their
+# own containerd and can be rate-limited/network-isolated, unlike the build daemon.
+CURL_IMAGE="curlimages/curl:8.11.1"
 PASS=0
 FAIL=0
 ok()  { echo "  PASS: $1"; PASS=$((PASS + 1)); }
@@ -41,7 +45,7 @@ trap cleanup EXIT
 # Run a shell snippet inside a throwaway curl pod and echo its stdout.
 incluster() {
   kubectl delete pod medusa-e2e-curl --now >/dev/null 2>&1
-  kubectl run medusa-e2e-curl --image=curlimages/curl:8.11.1 --restart=Never \
+  kubectl run medusa-e2e-curl --image="$CURL_IMAGE" --restart=Never \
     --command -- sh -c "$1" >/dev/null 2>&1
   for _ in $(seq 1 45); do
     ph=$(kubectl get pod medusa-e2e-curl -o jsonpath='{.status.phase}' 2>/dev/null)
@@ -80,6 +84,11 @@ docker build -t "$IMAGE" . >/dev/null 2>&1 || { echo "docker build failed"; exit
 if [ -n "$KIND_NAME" ]; then
   echo "=== kind load $IMAGE into $KIND_NAME ==="
   kind load docker-image "$IMAGE" --name "$KIND_NAME" || { echo "kind load failed"; exit 1; }
+  # Also preload the curl helper image: the kind node's containerd would otherwise
+  # pull it from Docker Hub itself (rate-limited / possibly network-isolated), which
+  # leaves the helper pod in ImagePullBackOff and every in-cluster probe empty.
+  echo "=== kind load $CURL_IMAGE into $KIND_NAME ==="
+  docker pull "$CURL_IMAGE" >/dev/null 2>&1 && kind load docker-image "$CURL_IMAGE" --name "$KIND_NAME" >/dev/null 2>&1 || echo "  (warn: could not preload $CURL_IMAGE; node will try to pull it)"
 elif [ -n "${MEDUSA_E2E_REGISTRY:-}" ]; then
   echo "=== push $IMAGE ==="
   docker push "$IMAGE" >/dev/null 2>&1 || { echo "docker push failed"; exit 1; }
@@ -109,6 +118,21 @@ if ! kubectl rollout status statefulset/medusa --timeout=120s >/dev/null; then
   exit 1
 fi
 sleep 12 # let the maintenance loop converge
+
+# ---- smoke: the in-cluster curl helper must run and reach a medusa pod ----
+# Every assertion below goes through incluster(); if the helper pod can't start
+# (image pull) or can't reach the pods (DNS/network), they'd all fail with empty
+# output and no clue. Probe once up front and dump the helper's + pods' state so a
+# systemic failure is diagnosable from the log instead of 19 blank "FAIL"s.
+if [ -z "$(incluster 'curl -s -o /dev/null -w "%{http_code}" medusa-0.medusa:8080/stats')" ]; then
+  echo "smoke FAILED: in-cluster curl returned nothing; diagnostics:"
+  kubectl run medusa-e2e-curl --image="$CURL_IMAGE" --restart=Never --command -- sh -c 'sleep 30' >/dev/null 2>&1
+  sleep 3
+  kubectl get pod medusa-e2e-curl -o wide 2>&1 | sed 's/^/  /'
+  kubectl describe pod medusa-e2e-curl 2>&1 | grep -iE "image|pull|fail|error|warn|reason|back-off" | tail -12 | sed 's/^/  /'
+  kubectl delete pod medusa-e2e-curl --now >/dev/null 2>&1
+  kubectl get pods -l app=medusa -o wide 2>&1 | sed 's/^/  /'
+fi
 
 # ---- test: cluster formation via DNS auto-discovery ----
 # The manifest configures MEDUSA_DISCOVERY=dns:medusa:7700 (no seed list), so
