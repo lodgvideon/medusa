@@ -345,7 +345,11 @@ sleep 8
 # ---- test: zero-data-loss rolling restart ----
 echo "=== test: rolling-restart data survival ==="
 kubectl rollout restart statefulset/medusa >/dev/null
-kubectl rollout status statefulset/medusa --timeout=150s >/dev/null
+# A StatefulSet rolls one pod at a time behind a readiness gate, so on a slow
+# single-node CI cluster the sequential restart needs a longer window to fully
+# settle before the data probe (otherwise the node is still churning and the
+# ephemeral probe pod can't start in time).
+kubectl rollout status statefulset/medusa --timeout=300s >/dev/null
 # Poll rather than a single sleep+check: on a slow single-node CI cluster the pods
 # (and the ephemeral probe pod) can lag the rollout-status return, so retry until
 # the data reads back or the window elapses.
