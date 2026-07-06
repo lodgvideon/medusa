@@ -13,6 +13,15 @@ import (
 // maxPoolPerAddr bounds idle client connections cached per remote address.
 const maxPoolPerAddr = 8
 
+// defaultIOTimeout bounds a single request's write+read when the caller's context
+// carries no deadline. Without it, SetDeadline(time.Time{}) leaves the exchange
+// unbounded, so a request to a dead peer over a stale pooled connection blocks for
+// the OS-level TCP timeout (minutes) — stalling read/write failover to a backup.
+// A caller that sets its own deadline (the norm) still wins; this only caps the
+// deadline-less case (e.g. context.Background()). It is a var so tests can shrink
+// it; production never mutates it.
+var defaultIOTimeout = 30 * time.Second
+
 // NewTCP returns a TCP transport. addr is the listen address; pass host:0 to
 // let the OS choose a port (resolved and visible via Addr after Listen). A
 // transport used only as a client need not call Listen.
@@ -139,7 +148,10 @@ func (t *tcpTransport) Send(ctx context.Context, addr string, reqType medusav1.M
 	if dl, ok := ctx.Deadline(); ok {
 		_ = cc.c.SetDeadline(dl)
 	} else {
-		_ = cc.c.SetDeadline(time.Time{})
+		// No caller deadline: bound the exchange anyway so a dead peer (e.g. a
+		// stale pooled connection to a node that just closed) cannot hang the
+		// request indefinitely and stall failover to a backup.
+		_ = cc.c.SetDeadline(time.Now().Add(defaultIOTimeout))
 	}
 
 	if err := writeFrame(cc.c, cc.hdr[:], reqType, req); err != nil {
