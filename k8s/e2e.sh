@@ -346,8 +346,15 @@ sleep 8
 echo "=== test: rolling-restart data survival ==="
 kubectl rollout restart statefulset/medusa >/dev/null
 kubectl rollout status statefulset/medusa --timeout=150s >/dev/null
-sleep 15
-out=$(incluster 'm=0; for i in $(seq 1 30); do v=$(curl -s medusa-1.medusa:8080/v1/maps/g/k$i); [ "$v" = "v$i" ] || m=$((m + 1)); done; echo "miss=$m"')
+# Poll rather than a single sleep+check: on a slow single-node CI cluster the pods
+# (and the ephemeral probe pod) can lag the rollout-status return, so retry until
+# the data reads back or the window elapses.
+out=""
+for _ in $(seq 1 8); do
+  sleep 8
+  out=$(incluster 'm=0; for i in $(seq 1 30); do v=$(curl -s medusa-1.medusa:8080/v1/maps/g/k$i); [ "$v" = "v$i" ] || m=$((m + 1)); done; echo "miss=$m"')
+  echo "$out" | grep -q "miss=0" && break
+done
 if echo "$out" | grep -q "miss=0"; then
   ok "all 30 keys survived a rolling restart"
 else
@@ -360,8 +367,12 @@ echo "=== test: whole-cluster restart (persistence) ==="
 # the recreated pods reload it — there is no peer to migrate to.
 kubectl delete pods -l app=medusa --wait=true >/dev/null 2>&1
 kubectl rollout status statefulset/medusa --timeout=150s >/dev/null
-sleep 16
-out=$(incluster 'm=0; for i in $(seq 1 30); do v=$(curl -s medusa-2.medusa:8080/v1/maps/g/k$i); [ "$v" = "v$i" ] || m=$((m + 1)); done; echo "miss=$m"')
+out=""
+for _ in $(seq 1 8); do
+  sleep 8
+  out=$(incluster 'm=0; for i in $(seq 1 30); do v=$(curl -s medusa-2.medusa:8080/v1/maps/g/k$i); [ "$v" = "v$i" ] || m=$((m + 1)); done; echo "miss=$m"')
+  echo "$out" | grep -q "miss=0" && break
+done
 if echo "$out" | grep -q "miss=0"; then
   ok "all 30 keys survived a whole-cluster restart (reloaded from disk)"
 else
@@ -378,8 +389,12 @@ out=$(incluster '
   echo done')
 kubectl delete pods -l app=medusa --grace-period=0 --force >/dev/null 2>&1
 kubectl rollout status statefulset/medusa --timeout=150s >/dev/null
-sleep 16
-out=$(incluster 'curl -s -o /dev/null -w "%{http_code} " medusa-1.medusa:8080/v1/maps/g/walkey; curl -s medusa-1.medusa:8080/v1/maps/g/walkey')
+out=""
+for _ in $(seq 1 8); do
+  sleep 8
+  out=$(incluster 'curl -s -o /dev/null -w "%{http_code} " medusa-1.medusa:8080/v1/maps/g/walkey; curl -s medusa-1.medusa:8080/v1/maps/g/walkey')
+  echo "$out" | grep -q "walval" && break
+done
 if echo "$out" | grep -q "walval"; then
   ok "key written just before a SIGKILL crash was recovered from the WAL"
 else
