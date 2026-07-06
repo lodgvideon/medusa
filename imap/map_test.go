@@ -634,14 +634,17 @@ func TestPutTTLExpires(t *testing.T) {
 	ctx := context.Background()
 	m := a.svc.Map("t")
 
-	if err := m.PutTTL(ctx, []byte("k"), []byte("v"), 80*time.Millisecond); err != nil {
+	// Generous margins so the "before expiry" read is robust under -race on a
+	// CPU-capped CI runner (a short 80ms TTL could lapse during setup); the sleep
+	// stays > TTL so expiry is deterministic.
+	if err := m.PutTTL(ctx, []byte("k"), []byte("v"), 1*time.Second); err != nil {
 		t.Fatalf("PutTTL: %v", err)
 	}
 	if v, ok, err := m.Get(ctx, []byte("k")); err != nil || !ok || string(v) != "v" {
 		t.Fatalf("before expiry get = %q,%v,%v", v, ok, err)
 	}
 
-	time.Sleep(140 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 	if _, ok, err := m.Get(ctx, []byte("k")); err != nil || ok {
 		t.Fatalf("after expiry get ok = %v, want false", ok)
 	}

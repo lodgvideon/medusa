@@ -350,7 +350,11 @@ func TestPutWithTTLExpires(t *testing.T) {
 	srv := newTestServer(t)
 	url := srv.URL + "/v1/maps/m/ttlkey"
 
-	if resp := do(t, http.MethodPut, url+"?ttl=80ms", "v"); resp.StatusCode != http.StatusNoContent {
+	// A generous TTL keeps the "before expiry" GET robust: under -race on a
+	// CPU-capped CI runner the PUT+GET round-trips can eat tens of ms, so a short
+	// TTL (was 80ms) occasionally expired mid-setup and flaked. 1s dwarfs any
+	// plausible setup latency; the post-sleep is > TTL so expiry stays deterministic.
+	if resp := do(t, http.MethodPut, url+"?ttl=1s", "v"); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("PUT?ttl status = %d", resp.StatusCode)
 	}
 	if resp := do(t, http.MethodGet, url, ""); resp.StatusCode != http.StatusOK {
@@ -360,7 +364,7 @@ func TestPutWithTTLExpires(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	time.Sleep(140 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 	resp := do(t, http.MethodGet, url, "")
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {

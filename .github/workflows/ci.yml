@@ -78,8 +78,10 @@ jobs:
     # continue-on-error while this new job is proven out in real CI (kind-in-DinD
     # can't be verified on the dev machine): it surfaces logs without blocking main.
     # Promote to a hard gate (drop continue-on-error) once it is green.
+    #
+    # TEMP: no `needs: [test]` during bring-up so the e2e signal isn't gated by an
+    # unrelated flaky unit test. Restore `needs: [test]` once both are stable.
     if: github.event_name == 'push'
-    needs: [test]
     runs-on: [self-hosted, medusa]
     continue-on-error: true
     permissions:
