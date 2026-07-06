@@ -53,21 +53,34 @@ incluster() {
 }
 
 # ---- build + deploy (unique tag forces a fresh image into the cluster) ----
-# Two image-delivery modes, so the same suite runs on a laptop and in CI:
-#   * local (default): build into the local Docker daemon and reference by tag.
-#     Works when the cluster shares that daemon's image store (docker-desktop, or
-#     kind after a load) — the dev-machine path.
-#   * registry: export MEDUSA_E2E_REGISTRY (e.g. ghcr.io/lodgvideon) to build, tag,
-#     and PUSH so a remote cluster (e.g. the self-hosted CI runner's) can pull it.
-#     If pulling needs auth, also export MEDUSA_E2E_REGISTRY_SERVER/_USER/_PASS: a
-#     docker-registry pull secret is created and attached to the namespace's
-#     default ServiceAccount, so the pods pull without editing the manifest.
-if [ -n "${MEDUSA_E2E_REGISTRY:-}" ]; then
+# Three image-delivery modes, so the same suite runs on a laptop, in CI, and
+# against a remote cluster — picked in this precedence:
+#   1. kind: if the current context is a kind cluster (or MEDUSA_E2E_KIND_LOAD
+#      names one), `kind load` the built image straight into its nodes — no
+#      registry, no pull auth. Auto-detected, so the CI job needs no special env:
+#      kind is always the right delivery for a kind cluster.
+#   2. registry: MEDUSA_E2E_REGISTRY (e.g. ghcr.io/lodgvideon) builds+PUSHes for a
+#      remote cluster that can't see a locally-built image; MEDUSA_E2E_REGISTRY_
+#      SERVER/_USER/_PASS additionally create a docker-registry pull secret and
+#      attach it to the namespace's default ServiceAccount (pods pull, no manifest edit).
+#   3. local (default): Docker Desktop shares the build daemon's image store.
+KIND_NAME="${MEDUSA_E2E_KIND_LOAD:-}"
+if [ -z "$KIND_NAME" ]; then
+  case "$(kubectl config current-context 2>/dev/null)" in
+    kind-*) KIND_NAME="$(kubectl config current-context 2>/dev/null | sed 's/^kind-//')" ;;
+  esac
+fi
+
+if [ -z "$KIND_NAME" ] && [ -n "${MEDUSA_E2E_REGISTRY:-}" ]; then
   IMAGE="${MEDUSA_E2E_REGISTRY%/}/medusa:e2e-$(date +%s)"
 fi
 echo "=== build $IMAGE ==="
 docker build -t "$IMAGE" . >/dev/null 2>&1 || { echo "docker build failed"; exit 1; }
-if [ -n "${MEDUSA_E2E_REGISTRY:-}" ]; then
+
+if [ -n "$KIND_NAME" ]; then
+  echo "=== kind load $IMAGE into $KIND_NAME ==="
+  kind load docker-image "$IMAGE" --name "$KIND_NAME" || { echo "kind load failed"; exit 1; }
+elif [ -n "${MEDUSA_E2E_REGISTRY:-}" ]; then
   echo "=== push $IMAGE ==="
   docker push "$IMAGE" >/dev/null 2>&1 || { echo "docker push failed"; exit 1; }
   if [ -n "${MEDUSA_E2E_REGISTRY_PASS:-}" ]; then
@@ -88,7 +101,13 @@ echo "=== deploy ==="
 kubectl delete statefulset medusa --ignore-not-found --now >/dev/null 2>&1
 kubectl delete pvc -l app=medusa --ignore-not-found --now >/dev/null 2>&1
 kubectl apply -f "$MANIFEST" >/dev/null
-kubectl rollout status statefulset/medusa --timeout=120s >/dev/null || { echo "rollout failed"; exit 1; }
+if ! kubectl rollout status statefulset/medusa --timeout=120s >/dev/null; then
+  echo "rollout failed; diagnostics:"
+  kubectl get pods -l app=medusa -o wide 2>&1 | sed 's/^/  /'
+  kubectl describe pods -l app=medusa 2>&1 | grep -iE "image|pull|fail|error|warn|reason|readiness|liveness|back-off|mount" | tail -25 | sed 's/^/  /'
+  kubectl get events --sort-by=.lastTimestamp 2>&1 | tail -20 | sed 's/^/  /'
+  exit 1
+fi
 sleep 12 # let the maintenance loop converge
 
 # ---- test: cluster formation via DNS auto-discovery ----
