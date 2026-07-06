@@ -32,6 +32,7 @@ cleanup() {
   echo "=== teardown ==="
   kubectl delete -f "$MANIFEST" --now >/dev/null 2>&1
   kubectl delete pvc -l app=medusa --now >/dev/null 2>&1 # StatefulSet PVCs are retained otherwise
+  kubectl delete secret medusa-e2e-regcred --ignore-not-found >/dev/null 2>&1 # registry mode only
   rm -f "$MANIFEST"
   docker rmi "$IMAGE" >/dev/null 2>&1
 }
@@ -52,8 +53,33 @@ incluster() {
 }
 
 # ---- build + deploy (unique tag forces a fresh image into the cluster) ----
+# Two image-delivery modes, so the same suite runs on a laptop and in CI:
+#   * local (default): build into the local Docker daemon and reference by tag.
+#     Works when the cluster shares that daemon's image store (docker-desktop, or
+#     kind after a load) — the dev-machine path.
+#   * registry: export MEDUSA_E2E_REGISTRY (e.g. ghcr.io/lodgvideon) to build, tag,
+#     and PUSH so a remote cluster (e.g. the self-hosted CI runner's) can pull it.
+#     If pulling needs auth, also export MEDUSA_E2E_REGISTRY_SERVER/_USER/_PASS: a
+#     docker-registry pull secret is created and attached to the namespace's
+#     default ServiceAccount, so the pods pull without editing the manifest.
+if [ -n "${MEDUSA_E2E_REGISTRY:-}" ]; then
+  IMAGE="${MEDUSA_E2E_REGISTRY%/}/medusa:e2e-$(date +%s)"
+fi
 echo "=== build $IMAGE ==="
 docker build -t "$IMAGE" . >/dev/null 2>&1 || { echo "docker build failed"; exit 1; }
+if [ -n "${MEDUSA_E2E_REGISTRY:-}" ]; then
+  echo "=== push $IMAGE ==="
+  docker push "$IMAGE" >/dev/null 2>&1 || { echo "docker push failed"; exit 1; }
+  if [ -n "${MEDUSA_E2E_REGISTRY_PASS:-}" ]; then
+    kubectl delete secret medusa-e2e-regcred --ignore-not-found >/dev/null 2>&1
+    kubectl create secret docker-registry medusa-e2e-regcred \
+      --docker-server="${MEDUSA_E2E_REGISTRY_SERVER:-ghcr.io}" \
+      --docker-username="${MEDUSA_E2E_REGISTRY_USER:-token}" \
+      --docker-password="${MEDUSA_E2E_REGISTRY_PASS}" >/dev/null 2>&1
+    kubectl patch serviceaccount default \
+      -p '{"imagePullSecrets":[{"name":"medusa-e2e-regcred"}]}' >/dev/null 2>&1
+  fi
+fi
 sed "s|image: medusa:.*|image: $IMAGE|" k8s/medusa.yaml > "$MANIFEST"
 
 echo "=== deploy ==="

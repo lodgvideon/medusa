@@ -344,6 +344,11 @@ CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs gofmt, `go vet`
 a `docker build` on every push and pull request. `push` events run on a
 [self-hosted runner in Kubernetes](#self-hosted-ci-runner-on-kubernetes);
 `pull_request` events (including untrusted forks) stay on GitHub-hosted runners.
+On `push`, a separate **`e2e` job** runs the full Kubernetes suite: it spins up a
+throwaway `kind` cluster inside the runner's Docker-in-Docker, pushes the image to
+`ghcr.io`, deploys the StatefulSet, and asserts cluster formation, replication,
+the distributed map/queue/aggregations, eviction, and anti-entropy metrics
+end-to-end — so per iteration you push and wait on CI, not just the local run.
 
 ## Running on Kubernetes
 
@@ -386,6 +391,16 @@ cluster is reachable:
 ```bash
 bash k8s/e2e.sh            # or: go test -tags k8s -run TestK8sE2E -timeout 15m .
 ```
+
+By default it builds into the local Docker daemon and references the image by
+tag (works when the cluster shares that daemon's store — Docker Desktop, or
+`kind` after a load). To run against a **remote** cluster that can't see a
+locally-built image, export `MEDUSA_E2E_REGISTRY` (e.g. `ghcr.io/lodgvideon`) so
+it builds, tags, and **pushes** the image; add
+`MEDUSA_E2E_REGISTRY_SERVER`/`_USER`/`_PASS` and it also creates a docker-registry
+pull secret and attaches it to the namespace's default ServiceAccount, so the
+pods pull without editing the manifest. This is the path the CI `e2e` job takes
+(pushing to `ghcr.io`).
 
 > On Docker Desktop's (kind-based) Kubernetes, a rebuilt image under the same
 > tag is not re-synced into the cluster — bump the tag (`medusa:v2`, …); the

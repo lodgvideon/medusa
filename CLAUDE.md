@@ -27,9 +27,15 @@ Touchpoints to check before finishing: `README.md`, `k8s/e2e.sh`, `k8s/medusa.ya
 - **Test-first, ≥90% coverage** on hand-written packages; assert `0 allocs/op`
   on hot paths (`AllocsPerRun`). Generated `genproto/` is excluded from coverage.
 - **Verify in Kubernetes**: new cluster-visible behavior gets an assertion in
-  `k8s/e2e.sh` (run with `make e2e`; it skips cleanly without a cluster).
+  `k8s/e2e.sh` (run with `make e2e`; it skips cleanly without a cluster). CI runs
+  the same suite on a self-hosted runner (label `medusa`), pushing the image to
+  `ghcr.io` via `MEDUSA_E2E_REGISTRY` — so per-iteration, push and WAIT on the CI
+  `e2e` job, not just the local run.
 - Regenerate protobuf with `make gen` after editing `proto/`; commit the result.
 - The race detector needs a C compiler (cgo). It is available locally via
   mingw-w64 gcc at `C:\msys64\mingw64\bin` — prepend it to PATH and run
   `make race` (or `CGO_ENABLED=1 go test -race ./...`). Use it for any change
   touching concurrency.
+- The `make` targets need MSYS2's `make` at `C:\msys64\usr\bin` on PATH (it is not
+  on the default Git-bash PATH; an MSYS2 shell has it). Prepend
+  `C:\msys64\usr\bin:C:\msys64\mingw64\bin` to run `make race`/`make e2e`/`make gen`.
