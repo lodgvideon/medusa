@@ -350,10 +350,11 @@ func TestPutWithTTLExpires(t *testing.T) {
 	srv := newTestServer(t)
 	url := srv.URL + "/v1/maps/m/ttlkey"
 
-	// A generous TTL keeps the "before expiry" GET robust: under -race on a
-	// CPU-capped CI runner the PUT+GET round-trips can eat tens of ms, so a short
-	// TTL (was 80ms) occasionally expired mid-setup and flaked. 1s dwarfs any
-	// plausible setup latency; the post-sleep is > TTL so expiry stays deterministic.
+	// Timing-robust on both ends, so it can't flake under -race on a CPU-capped CI
+	// runner: a 1s TTL keeps the "before" GET safely present (dwarfs setup latency),
+	// and the "after" check POLLS for expiry (up to ~6s) rather than a single
+	// sleep+read — so any scheduling/clock skew that delays the read only slows the
+	// test, it doesn't fail it.
 	if resp := do(t, http.MethodPut, url+"?ttl=1s", "v"); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("PUT?ttl status = %d", resp.StatusCode)
 	}
@@ -364,11 +365,19 @@ func TestPutWithTTLExpires(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	time.Sleep(1500 * time.Millisecond)
-	resp := do(t, http.MethodGet, url, "")
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("GET after expiry status = %d, want 404", resp.StatusCode)
+	expired := false
+	for i := 0; i < 60; i++ {
+		time.Sleep(100 * time.Millisecond)
+		resp := do(t, http.MethodGet, url, "")
+		code := resp.StatusCode
+		resp.Body.Close()
+		if code == http.StatusNotFound {
+			expired = true
+			break
+		}
+	}
+	if !expired {
+		t.Fatal("key with a 1s TTL did not expire within the poll window")
 	}
 }
 

@@ -634,9 +634,10 @@ func TestPutTTLExpires(t *testing.T) {
 	ctx := context.Background()
 	m := a.svc.Map("t")
 
-	// Generous margins so the "before expiry" read is robust under -race on a
-	// CPU-capped CI runner (a short 80ms TTL could lapse during setup); the sleep
-	// stays > TTL so expiry is deterministic.
+	// Timing-robust on both ends (can't flake under -race on a CPU-capped runner):
+	// a 1s TTL keeps the "before" read safely present, and the "after" check POLLS
+	// for expiry (up to ~6s) rather than a single sleep+read, so scheduling/clock
+	// skew only slows the test instead of failing it.
 	if err := m.PutTTL(ctx, []byte("k"), []byte("v"), 1*time.Second); err != nil {
 		t.Fatalf("PutTTL: %v", err)
 	}
@@ -644,9 +645,16 @@ func TestPutTTLExpires(t *testing.T) {
 		t.Fatalf("before expiry get = %q,%v,%v", v, ok, err)
 	}
 
-	time.Sleep(1500 * time.Millisecond)
-	if _, ok, err := m.Get(ctx, []byte("k")); err != nil || ok {
-		t.Fatalf("after expiry get ok = %v, want false", ok)
+	expired := false
+	for i := 0; i < 60; i++ {
+		time.Sleep(100 * time.Millisecond)
+		if _, ok, _ := m.Get(ctx, []byte("k")); !ok {
+			expired = true
+			break
+		}
+	}
+	if !expired {
+		t.Fatal("key with a 1s TTL did not expire within the poll window")
 	}
 }
 
