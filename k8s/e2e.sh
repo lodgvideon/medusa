@@ -43,17 +43,24 @@ cleanup() {
 trap cleanup EXIT
 
 # Run a shell snippet inside a throwaway curl pod and echo its stdout.
+# Each call uses a UNIQUE pod name: a fixed name collides during a rolling restart
+# because deleting the previous pod (graceful termination) can lag the next `run`,
+# so `run` silently fails ("already exists") and the probe returns nothing. The
+# start window is generous (90s) because scheduling a fresh pod on the slow
+# single-node CI cluster mid-churn can take a while.
+POD_SEQ=0
 incluster() {
-  kubectl delete pod medusa-e2e-curl --now >/dev/null 2>&1
-  kubectl run medusa-e2e-curl --image="$CURL_IMAGE" --restart=Never \
+  POD_SEQ=$((POD_SEQ + 1))
+  local pod="medusa-e2e-curl-$POD_SEQ"
+  kubectl run "$pod" --image="$CURL_IMAGE" --restart=Never \
     --command -- sh -c "$1" >/dev/null 2>&1
-  for _ in $(seq 1 45); do
-    ph=$(kubectl get pod medusa-e2e-curl -o jsonpath='{.status.phase}' 2>/dev/null)
+  for _ in $(seq 1 90); do
+    ph=$(kubectl get pod "$pod" -o jsonpath='{.status.phase}' 2>/dev/null)
     { [ "$ph" = "Succeeded" ] || [ "$ph" = "Failed" ]; } && break
     sleep 1
   done
-  kubectl logs medusa-e2e-curl 2>/dev/null
-  kubectl delete pod medusa-e2e-curl --now >/dev/null 2>&1
+  kubectl logs "$pod" 2>/dev/null
+  kubectl delete pod "$pod" --now --wait=false >/dev/null 2>&1 # unique name: no need to block
 }
 
 # ---- build + deploy (unique tag forces a fresh image into the cluster) ----
