@@ -68,25 +68,18 @@ jobs:
 
   e2e:
     # Full Kubernetes suite: spin up a THROWAWAY `kind` cluster inside the runner's
-    # Docker-in-Docker, push the image to ghcr.io, deploy the StatefulSet, and
-    # assert cluster formation, replication, the distributed map/queue/aggregations,
-    # eviction, and anti-entropy metrics end to end. `push` only — it needs the
-    # self-hosted DinD, and fork PR code must never reach a self-hosted runner. The
-    # kind cluster is isolated, so this never touches the host cluster the runner
-    # lives in.
-    #
-    # continue-on-error while this new job is proven out in real CI (kind-in-DinD
-    # can't be verified on the dev machine): it surfaces logs without blocking main.
-    # Promote to a hard gate (drop continue-on-error) once it is green.
-    #
-    # TEMP: no `needs: [test]` during bring-up so the e2e signal isn't gated by an
-    # unrelated flaky unit test. Restore `needs: [test]` once both are stable.
+    # Docker-in-Docker, `kind load` the freshly built image straight into it (no
+    # registry round-trip — e2e.sh auto-detects the kind context), deploy the
+    # StatefulSet, and assert cluster formation, replication, the distributed
+    # map/queue/aggregations, eviction, and anti-entropy metrics end to end.
+    # `push` only — it needs the self-hosted DinD, and fork PR code must never
+    # reach a self-hosted runner. The kind cluster is isolated, so this never
+    # touches the host cluster the runner lives in.
     if: github.event_name == 'push'
+    needs: [test]
     runs-on: [self-hosted, medusa]
-    continue-on-error: true
     permissions:
       contents: read
-      packages: write # push the e2e image to ghcr.io via GITHUB_TOKEN
     env:
       KUBECTL_VERSION: v1.31.0
       KIND_VERSION: v0.24.0
@@ -104,14 +97,7 @@ jobs:
           kind version
       - name: create kind cluster (in DinD)
         run: kind create cluster --name "$KIND_CLUSTER" --wait 120s
-      - name: log in to ghcr.io
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-      - name: k8s e2e (push image to ghcr, deploy to kind, assert)
-        env:
-          MEDUSA_E2E_REGISTRY: ghcr.io/${{ github.repository_owner }}
-          MEDUSA_E2E_REGISTRY_SERVER: ghcr.io
-          MEDUSA_E2E_REGISTRY_USER: ${{ github.actor }}
-          MEDUSA_E2E_REGISTRY_PASS: ${{ secrets.GITHUB_TOKEN }}
+      - name: k8s e2e (build, kind load, deploy, assert)
         run: bash k8s/e2e.sh
       - name: delete kind cluster
         if: always()
