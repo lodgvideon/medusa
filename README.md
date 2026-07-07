@@ -350,7 +350,11 @@ built image into it, deploys the StatefulSet, and asserts cluster formation,
 replication, the distributed map/queue/aggregations, eviction, and anti-entropy
 metrics end-to-end — so per iteration you push and wait on CI, not just the local
 run. (It runs in an isolated kind cluster, never the host cluster the runner
-lives in.)
+lives in.) The restart-**durability** checks (rolling-restart, whole-cluster
+persistence, WAL crash recovery) are informational on that single-node kind
+cluster — its graceful-shutdown window and local-path storage make them
+marginal — since the durability logic is hard-asserted by the in-process unit
+tests and the local `k8s/e2e.sh` run against a real cluster.
 
 ## Running on Kubernetes
 
