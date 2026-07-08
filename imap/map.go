@@ -84,7 +84,7 @@ func (mp *Map) PutTTL(ctx context.Context, key, value []byte, ttl time.Duration)
 }
 
 func (mp *Map) putWithTTL(ctx context.Context, key, value []byte, ttlMs int64) error {
-	if mp.name == queueMap {
+	if IsReservedMap(mp.name) {
 		return errReservedMap // don't let the map API overwrite a queue's packed value
 	}
 	metrics.PutOps.Add(1)
@@ -336,7 +336,7 @@ func (mp *Map) Size(ctx context.Context) (uint64, error) {
 // and (as with any delete in this AP design) a leftover copy could briefly be
 // read via backup fallback until anti-entropy and a re-clear reconcile it.
 func (mp *Map) Clear(ctx context.Context) error {
-	if mp.name == queueMap {
+	if IsReservedMap(mp.name) {
 		return errReservedMap // don't let the map API wipe every queue at once
 	}
 	var firstErr error
@@ -399,7 +399,7 @@ func (mp *Map) Aggregate(ctx context.Context, aggregator string) ([]byte, error)
 
 // Remove deletes key, returning whether it existed.
 func (mp *Map) Remove(ctx context.Context, key []byte) (bool, error) {
-	if mp.name == queueMap {
+	if IsReservedMap(mp.name) {
 		return false, errReservedMap // don't let the map API delete a queue
 	}
 	metrics.RemoveOps.Add(1)
@@ -446,7 +446,7 @@ func (mp *Map) Remove(ctx context.Context, key []byte) (bool, error) {
 // Get/Remove it does not fall back to a backup: it routes to the owner, the node
 // responsible for the cached copy.
 func (mp *Map) Evict(ctx context.Context, key []byte) (bool, error) {
-	if mp.name == queueMap {
+	if IsReservedMap(mp.name) {
 		return false, errReservedMap
 	}
 	_, owner, ownerLocal := mp.route(key)
