@@ -228,12 +228,19 @@ func (s *store) snapshotAll() []entry {
 	return out
 }
 
-// loadAll inserts entries into the store, routing each to its partition. Used
-// to restore a snapshot on startup.
+// loadAll inserts entries into the store, routing each to its partition (queue
+// entries are partition-affine — see routedPartition). Used to restore a
+// snapshot on startup.
 func (s *store) loadAll(entries []entry) {
 	for _, e := range entries {
+		if e.mapName == queueMap && len(e.value) != 24 && len(e.value) > 0 {
+			// A pre-segmentation snapshot stored the whole queue as one packed
+			// value; upgrade it in place (see convertLegacyQueue).
+			s.loadAll(convertLegacyQueue(e.key, e.value))
+			continue
+		}
 		k := []byte(e.key)
-		s.put(partition.For(k), e.mapName, k, e.value, e.expireAt)
+		s.put(routedPartition(e.mapName, k), e.mapName, k, e.value, e.expireAt)
 	}
 }
 
@@ -407,7 +414,7 @@ func (s *store) countOwned(owned func(p int) bool) int {
 		sh := &s.shards[p]
 		sh.mu.RLock()
 		for name, inner := range sh.m {
-			if name == queueMap {
+			if IsReservedMap(name) {
 				continue
 			}
 			for _, v := range inner {
@@ -442,7 +449,7 @@ func (s *store) sampleOwned(owned func(p int) bool, limit int) []entry {
 		sh := &s.shards[p]
 		sh.mu.RLock()
 		for name, inner := range sh.m {
-			if name == queueMap {
+			if IsReservedMap(name) {
 				continue // never evict a queue (deleting the packed value drops all its items)
 			}
 			for k, v := range inner {
@@ -520,6 +527,70 @@ func (s *store) update(p int, name string, key []byte, fn func(cur []byte, exist
 	default:
 		return Keep, 0
 	}
+}
+
+// getFn/setFn/delFn are the accessors updateMulti hands to its critical-section
+// function: read an entry, stage-and-apply a write, stage-and-apply a delete.
+type (
+	getFn func(name string, key []byte) ([]byte, bool)
+	setFn func(name string, key, val []byte)
+	delFn func(name string, key []byte)
+)
+
+// mutation records one entry change made inside updateMulti, so the caller can
+// WAL-log and replicate exactly what the critical section did.
+type mutation struct {
+	mapName string
+	key     []byte
+	value   []byte // nil when del
+	del     bool
+}
+
+// updateMulti runs fn with read/write access to the entries of partition p,
+// atomically under the shard lock — the multi-key analogue of update, for
+// structures (the queue) whose state spans several co-located entries and must
+// change as one transaction. Writes are applied immediately (set copies the
+// value; get's result aliases the store and must be copied before mutation) and
+// returned as the mutation list for WAL logging and backup replication. Entries
+// written here carry no expiry (queue state does not TTL).
+func (s *store) updateMulti(p int, fn func(get getFn, set setFn, del delFn)) []mutation {
+	sh := &s.shards[p]
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	var muts []mutation
+	get := func(name string, key []byte) ([]byte, bool) {
+		inner := sh.m[name]
+		if inner == nil {
+			return nil, false
+		}
+		v, ok := inner[string(key)] // allocation-free lookup
+		if !ok || v.expired(nowNano()) {
+			return nil, false
+		}
+		return v.data, true
+	}
+	set := func(name string, key, val []byte) {
+		inner := sh.m[name]
+		if inner == nil {
+			inner = make(map[string]value)
+			sh.m[name] = inner
+		}
+		d := make([]byte, len(val))
+		copy(d, val)
+		inner[string(key)] = value{data: d}
+		muts = append(muts, mutation{mapName: name, key: append([]byte(nil), key...), value: d})
+	}
+	del := func(name string, key []byte) {
+		if inner := sh.m[name]; inner != nil {
+			delete(inner, string(key))
+			if len(inner) == 0 {
+				delete(sh.m, name)
+			}
+		}
+		muts = append(muts, mutation{mapName: name, key: append([]byte(nil), key...), del: true})
+	}
+	fn(get, set, del)
+	return muts
 }
 
 // remove deletes key from the named map, returning true if a live entry was

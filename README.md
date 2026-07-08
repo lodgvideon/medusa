@@ -63,18 +63,30 @@ excluding the generated `genproto/` and the thin `cmd/medusa-node` main.
   the cached copy cluster-wide *without* delete-through, so the next `Get` reloads
   — to refresh or shed memory (`POST /v1/maps/{map}/{key}/evict`). The loader is
   the injection seam (SOLID dependency inversion); register it on every node.
-- **Distributed FIFO queue** — `node.Queue(name)` with `Offer`/`Poll`/`Peek`/
-  `Size` (also `POST /v1/queues/{q}/offer`, `.../poll`, `GET .../peek`,
-  `GET /v1/queues/{q}`). The queue lives on one owner (of its name's partition),
-  so order is global FIFO. It is built on the map — the whole queue is one value
-  mutated by atomic offer/poll EntryProcessors — so it inherits backup
-  replication, failover, WAL durability, snapshots, and migration for free.
-  Trade-off: each op is O(n) over the packed value, total queue size bounded by
-  the per-value transport limit (~64 MiB); a per-item form is a future refinement.
-  The backing namespace is reserved — the ordinary map API (and its HTTP routes)
-  refuses to read or mutate it, so a client can't corrupt or wipe queues through
-  it. Queue ops are at-least-once under owner failover (a retried poll can drop a
-  second item) — carry an idempotency key where that matters.
+- **Distributed FIFO queue (transactional)** — `node.Queue(name)` with `Offer`/
+  `Poll`/`Peek`/`Size` (also `POST /v1/queues/{q}/offer`, `.../poll`,
+  `GET .../peek`, `GET /v1/queues/{q}`). A queue is a chain of bounded
+  **segments** plus a small `[head][tail][count]` metadata record, all
+  **partition-affine**: every entry routes by the queue *name*, so the whole
+  queue co-locates in one partition — one owner, one shard lock (the Hazelcast
+  IQueue approach). Each operation is a single **transaction** on that owner: the
+  metadata and the head/tail segment change atomically in one critical section
+  (multi-key `updateMulti` under the shard + WAL locks), so FIFO order is total
+  and an element can never exist yet be unreachable — correct under fully
+  concurrent producers and consumers by construction. Segments bound the bytes
+  copied per op (one segment, not the whole queue) and lift the per-value
+  transport cap: a queue is bounded by its owner's memory. `Size` is O(1).
+  It inherits backup replication, failover, WAL durability, snapshots, and
+  migration from the map (co-location means one rebalance moves the whole queue;
+  metadata is pushed after segments, and a poll that sees an incomplete in-flight
+  queue reads empty transiently rather than ever mutating it). Segment ids are
+  monotonic for a queue's lifetime — a drained queue keeps its 24-byte metadata —
+  so stale replicas can never merge back in. Pre-segmentation queue values are
+  converted automatically on snapshot/WAL restore. The backing namespaces are
+  reserved — the ordinary map API (and its HTTP routes) refuses to touch them,
+  and max-size eviction never samples them. Ops are at-least-once under owner
+  failover (a lost response + retry can duplicate an offer or drop a polled
+  element) — carry an idempotency key where that matters.
 - **Atomic coordination primitives** — built on the same atomic owner-side
   read-modify-write: `Map.PutIfAbsent(key, value)` stores only if the key is
   absent (returns whether it won — a distributed-lock / leader-election building

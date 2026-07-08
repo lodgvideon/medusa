@@ -68,18 +68,22 @@ func TestReservedMapRejectsMutations(t *testing.T) {
 		t.Fatalf("offer: %v", err)
 	}
 
-	rm := s.Map(queueMap)
-	if err := rm.Put(ctx, []byte("q"), []byte("corrupt")); !errors.Is(err, errReservedMap) {
-		t.Fatalf("Put on reserved map = %v, want errReservedMap", err)
-	}
-	if _, err := rm.Remove(ctx, []byte("q")); !errors.Is(err, errReservedMap) {
-		t.Fatalf("Remove on reserved map = %v, want errReservedMap", err)
-	}
-	if err := rm.Clear(ctx); !errors.Is(err, errReservedMap) {
-		t.Fatalf("Clear on reserved map = %v, want errReservedMap", err)
-	}
-	if _, err := rm.Evict(ctx, []byte("q")); !errors.Is(err, errReservedMap) {
-		t.Fatalf("Evict on reserved map = %v, want errReservedMap", err)
+	// Both reserved namespaces — queue metadata and segments — reject client
+	// mutations through the ordinary map API.
+	for _, name := range []string{queueMap, queueSegMap} {
+		rm := s.Map(name)
+		if err := rm.Put(ctx, []byte("q"), []byte("corrupt")); !errors.Is(err, errReservedMap) {
+			t.Fatalf("Put on reserved map %q = %v, want errReservedMap", name, err)
+		}
+		if _, err := rm.Remove(ctx, []byte("q")); !errors.Is(err, errReservedMap) {
+			t.Fatalf("Remove on reserved map %q = %v, want errReservedMap", name, err)
+		}
+		if err := rm.Clear(ctx); !errors.Is(err, errReservedMap) {
+			t.Fatalf("Clear on reserved map %q = %v, want errReservedMap", name, err)
+		}
+		if _, err := rm.Evict(ctx, []byte("q")); !errors.Is(err, errReservedMap) {
+			t.Fatalf("Evict on reserved map %q = %v, want errReservedMap", name, err)
+		}
 	}
 	if n, _ := s.Queue("q").Size(ctx); n != 1 {
 		t.Fatalf("queue size after rejected mutations = %d, want 1 (queue must be intact)", n)

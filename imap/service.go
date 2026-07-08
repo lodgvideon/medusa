@@ -145,7 +145,7 @@ func (s *Service) pruneToKeysetLogged(p int, keep map[string]map[string]struct{}
 // an acknowledged write survives an ungraceful crash and replay reconstructs the
 // live order; a WAL error is surfaced rather than silently dropped.
 func (s *Service) applyPut(ctx context.Context, name string, key, value []byte, ttlMs int64, isBackup bool) (bool, error) {
-	p := partition.For(key)
+	p := routedPartition(name, key)
 	expireAt := expireFromTTL(ttlMs)
 	var created bool
 	if err := s.logged(
@@ -158,7 +158,7 @@ func (s *Service) applyPut(ctx context.Context, name string, key, value []byte, 
 	}
 	if !isBackup {
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_PUT_REQUEST, name, key, value, ttlMs)
-		if name != queueMap { // reserved-namespace mutations are not user-visible events
+		if !IsReservedMap(name) { // reserved-namespace mutations are not user-visible events
 			if created {
 				s.events.emit(EventCreated, name, key, value)
 			} else {
@@ -185,7 +185,7 @@ func (s *Service) applyPut(ctx context.Context, name string, key, value []byte, 
 // replicated (the external store is the source of truth, and replicating would
 // re-trigger write-through). A loader error is surfaced.
 func (s *Service) getThrough(name string, key []byte) ([]byte, bool, error) {
-	p := partition.For(key)
+	p := routedPartition(name, key)
 	if v, ok := s.store.get(p, name, key); ok {
 		return v, true, nil
 	}
@@ -219,7 +219,7 @@ func expireFromTTL(ttlMs int64) int64 {
 // applyRemove deletes locally and, unless a backup write, replicates the delete.
 // Like applyPut it records the deletion in the WAL before returning.
 func (s *Service) applyRemove(ctx context.Context, name string, key []byte, isBackup bool) (bool, error) {
-	p := partition.For(key)
+	p := routedPartition(name, key)
 	var existed bool
 	if err := s.logged(
 		func() { existed = s.store.remove(p, name, key) },
@@ -231,7 +231,7 @@ func (s *Service) applyRemove(ctx context.Context, name string, key []byte, isBa
 	}
 	if !isBackup {
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_REMOVE_REQUEST, name, key, nil, 0)
-		if name != queueMap && existed {
+		if !IsReservedMap(name) && existed {
 			s.events.emit(EventRemoved, name, key, nil)
 		}
 		if ms := s.loaders.store(name); ms != nil {
@@ -254,7 +254,7 @@ func (s *Service) applyRemove(ctx context.Context, name string, key []byte, isBa
 // through the MapLoader. The store mutation and its WAL record are one unit
 // (logged), like every owner write. It is owner-only (Map.Evict routes here).
 func (s *Service) applyEvict(ctx context.Context, name string, key []byte) (bool, error) {
-	p := partition.For(key)
+	p := routedPartition(name, key)
 	var existed bool
 	if err := s.logged(
 		func() { existed = s.store.remove(p, name, key) },
@@ -467,6 +467,15 @@ func (s *Service) sendReconcile(ctx context.Context, addr string, p int, keys []
 // node and replicates the resulting state to the backup. It returns the
 // processor's result.
 func (s *Service) applyExecute(ctx context.Context, name string, key []byte, procName string, arg []byte) ([]byte, error) {
+	// Queue operations are transactional (multi-key: metadata + a segment) and are
+	// intercepted here rather than run as single-key processors. The segment
+	// namespace accepts no direct Executes at all.
+	if name == queueMap {
+		return s.applyQueueExecute(ctx, string(key), procName, arg)
+	}
+	if name == queueSegMap {
+		return nil, errReservedMap
+	}
 	proc, ok := lookupProcessor(procName)
 	if !ok {
 		return nil, fmt.Errorf("imap: unknown processor %q", procName)
@@ -505,7 +514,7 @@ func (s *Service) applyExecute(ctx context.Context, name string, key []byte, pro
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_PUT_REQUEST, name, key, newVal, remainingTTLms(expireAt, nowNano()))
 		// Suppress listener events for the reserved queue namespace: an offer/poll is
 		// internal infrastructure, not a user-visible map mutation.
-		if name != queueMap {
+		if !IsReservedMap(name) {
 			if existedBefore {
 				s.events.emit(EventUpdated, name, key, newVal)
 			} else {
@@ -519,13 +528,62 @@ func (s *Service) applyExecute(ctx context.Context, name string, key []byte, pro
 		}
 	case Delete:
 		s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_REMOVE_REQUEST, name, key, nil, 0)
-		if name != queueMap && existedBefore {
+		if !IsReservedMap(name) && existedBefore {
 			s.events.emit(EventRemoved, name, key, nil)
 		}
 		if ms := s.loaders.store(name); ms != nil { // delete-through, like applyRemove
 			if err := ms.Delete(key); err != nil {
 				return out, err
 			}
+		}
+	}
+	return out, nil
+}
+
+// applyQueueExecute runs one queue operation as a TRANSACTION on this (owner)
+// node: queueOp mutates the queue's co-located entries — metadata plus the
+// head/tail segment — inside a single store.updateMulti critical section (the
+// shard lock), itself inside the WAL lock (logged), so the store changes and
+// their WAL records are one atomic unit exactly like every other owner write.
+// The applied mutations are then replicated to the backups entry-by-entry
+// (best-effort, like all replication). Queue ops fire no entry listeners and
+// never write-through — the reserved namespaces are internal infrastructure.
+func (s *Service) applyQueueExecute(ctx context.Context, qname, op string, arg []byte) ([]byte, error) {
+	p := partition.For([]byte(qname)) // queue state is partition-affine on the name
+	var (
+		out  []byte
+		muts []mutation
+		oerr error
+	)
+	if err := s.logged(
+		func() {
+			muts = s.store.updateMulti(p, func(get getFn, set setFn, del delFn) {
+				out, oerr = queueOp(qname, op, arg, get, set, del)
+			})
+		},
+		func() error {
+			for _, m := range muts {
+				if m.del {
+					if err := s.wal.appendRemoveLocked(m.mapName, m.key); err != nil {
+						return err
+					}
+				} else if err := s.wal.appendLocked(walOpPut, &medusav1.SnapshotEntry{Map: m.mapName, Key: m.key, Value: m.value}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	); err != nil {
+		return out, err
+	}
+	if oerr != nil {
+		return nil, oerr // unknown op: nothing was mutated
+	}
+	for _, m := range muts {
+		if m.del {
+			s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_REMOVE_REQUEST, m.mapName, m.key, nil, 0)
+		} else {
+			s.replicate(ctx, p, medusav1.MessageType_MESSAGE_TYPE_PUT_REQUEST, m.mapName, m.key, m.value, 0)
 		}
 	}
 	return out, nil
@@ -580,7 +638,10 @@ func (s *Service) Migrate(ctx context.Context, table *partition.Table) bool {
 		if ctx.Err() != nil {
 			return false // time-boxed or cancelled mid-pass; caller retries
 		}
-		entries := s.store.snapshotPartition(p)
+		// Queue metadata is pushed after its segments (orderQueueMetaLast), so the
+		// receiver never serves a queue whose metadata references segments that
+		// have not arrived yet.
+		entries := orderQueueMetaLast(s.store.snapshotPartition(p))
 		if len(entries) == 0 {
 			continue
 		}
@@ -696,7 +757,7 @@ func (s *Service) SyncBackups(ctx context.Context, table *partition.Table, start
 				// pushing values: a key still live at push time joins the set; a key
 				// deleted/expired since the snapshot is excluded from BOTH the push and
 				// the set, so the backup neither resurrects nor keeps it.
-				snap := s.store.snapshotPartition(p)
+				snap := orderQueueMetaLast(s.store.snapshotPartition(p)) // segments before queue metadata
 				keyset := make([]*medusav1.KeyRef, 0, len(snap))
 				for _, e := range snap {
 					key := []byte(e.key)
@@ -967,10 +1028,14 @@ func (s *Service) OpenWAL(path string) error {
 			if expireAt != 0 && expireAt <= now {
 				return // expired while we were down
 			}
-			s.store.put(partition.For(key), name, key, value, expireAt)
+			if name == queueMap && len(value) != 24 && len(value) > 0 {
+				s.store.loadAll(convertLegacyQueue(string(key), value)) // legacy queue record
+				return
+			}
+			s.store.put(routedPartition(name, key), name, key, value, expireAt)
 		},
 		func(name string, key []byte) {
-			s.store.remove(partition.For(key), name, key)
+			s.store.remove(routedPartition(name, key), name, key)
 		},
 		func(name string) {
 			s.store.clearMap(name)

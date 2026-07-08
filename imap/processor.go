@@ -41,10 +41,6 @@ var (
 		"cas":         casProc,
 		"lockacquire": lockAcquireProc,
 		"lockrelease": lockReleaseProc,
-		"queueoffer":  queueOfferProc,
-		"queuepoll":   queuePollProc,
-		"queuepeek":   queuePeekProc,
-		"queuesize":   queueSizeProc,
 	}
 )
 
